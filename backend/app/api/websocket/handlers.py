@@ -17,6 +17,8 @@ from app.models.responses import (
     WebSocketEventType,
 )
 from app.services.file_manager import file_manager
+from app.services.document_parser import document_parser
+from app.services.ai_analyzer import ai_analyzer
 
 router = APIRouter()
 
@@ -317,6 +319,9 @@ async def run_analysis_with_streaming(
         all_findings: list[dict] = []
         all_framework_results: list[dict] = []
 
+        # Track all strengths from documents
+        all_strengths: list[dict] = []
+
         for i, uploaded_file in enumerate(files):
             is_soc2 = is_soc2_document(uploaded_file.original_name)
             doc_type = "SOC2 Type 2 Report" if is_soc2 else "Document"
@@ -333,103 +338,129 @@ async def run_analysis_with_streaming(
                 progress_override=5 + i * file_progress_share,
             )
 
-            await asyncio.sleep(0.5)
+            # Parse the document to extract text
+            file_path = await file_manager.get_file_path(session_id, uploaded_file.id)
+            if not file_path:
+                await emitter.emit(
+                    WebSocketEventType.ANALYSIS_ERROR,
+                    f"Could not find file: {uploaded_file.original_name}",
+                    data={"filename": uploaded_file.original_name},
+                )
+                continue
+
+            parse_result = await document_parser.parse_file(file_path, uploaded_file.mime_type)
+
+            if parse_result.get("error"):
+                await emitter.emit(
+                    WebSocketEventType.ANALYSIS_ERROR,
+                    f"Error parsing {uploaded_file.original_name}: {parse_result['error']}",
+                    data={"filename": uploaded_file.original_name, "error": parse_result["error"]},
+                )
+                continue
+
+            document_text = parse_result.get("text", "")
+            if not document_text.strip():
+                await emitter.emit(
+                    WebSocketEventType.DOCUMENT_LOADED,
+                    f"Warning: No text extracted from {uploaded_file.original_name}",
+                    data={"filename": uploaded_file.original_name, "warning": "No text content"},
+                )
+                continue
 
             await emitter.emit(
                 WebSocketEventType.DOCUMENT_LOADED,
-                f"Loaded {doc_type}: {uploaded_file.original_name}",
+                f"Loaded {doc_type}: {uploaded_file.original_name} ({len(document_text):,} characters)",
                 data={
                     "filename": uploaded_file.original_name,
                     "size_bytes": uploaded_file.size_bytes,
+                    "text_length": len(document_text),
                     "is_soc2": is_soc2,
+                    "truncated": parse_result.get("truncated", False),
                 },
             )
 
-            # Analyze against each framework
+            # Analyze document with AI
             await emitter.emit(
                 WebSocketEventType.DOCUMENT_ANALYZING,
-                f"Analyzing {uploaded_file.original_name} against {len(frameworks)} framework(s)...",
+                f"AI analyzing {uploaded_file.original_name} against {len(frameworks)} framework(s)...",
                 data={"filename": uploaded_file.original_name},
             )
 
-            # Framework analysis
-            for fw in frameworks:
-                await asyncio.sleep(0.8)
+            # Call the AI analyzer
+            ai_result = await ai_analyzer.analyze_document(
+                document_text=document_text,
+                filename=uploaded_file.original_name,
+                frameworks=frameworks,
+                is_soc2=is_soc2,
+            )
 
-                # SOC2 documents get slightly higher coverage scores
-                base_coverage = 65 + (hash(uploaded_file.id + fw) % 25)
-                if is_soc2:
-                    base_coverage = min(95, base_coverage + 10)
+            if not ai_result.get("success"):
+                await emitter.emit(
+                    WebSocketEventType.ANALYSIS_ERROR,
+                    f"AI analysis failed for {uploaded_file.original_name}: {ai_result.get('error', 'Unknown error')}",
+                    data={"filename": uploaded_file.original_name, "error": ai_result.get("error")},
+                )
+                # Continue with other documents
+                continue
+
+            # Process framework coverage from AI
+            for fw in frameworks:
+                fw_coverage = ai_result.get("framework_coverage", {}).get(fw, {})
+                if isinstance(fw_coverage, dict):
+                    coverage_pct = fw_coverage.get("coverage_percentage", 70)
+                    implemented = fw_coverage.get("implemented_controls", [])
+                    partial = fw_coverage.get("partial_controls", [])
+                    missing = fw_coverage.get("missing_controls", [])
+                else:
+                    coverage_pct = 70
+                    implemented, partial, missing = [], [], []
 
                 all_framework_results.append({
                     "framework": fw,
-                    "coverage_percentage": base_coverage,
-                    "implemented_controls": int(base_coverage * 0.5),
-                    "partial_controls": int(base_coverage * 0.2),
-                    "missing_controls": int((100 - base_coverage) * 0.3),
-                    "total_controls": 50,
+                    "coverage_percentage": coverage_pct,
+                    "implemented_controls": len(implemented) if isinstance(implemented, list) else implemented,
+                    "partial_controls": len(partial) if isinstance(partial, list) else partial,
+                    "missing_controls": len(missing) if isinstance(missing, list) else missing,
+                    "total_controls": (len(implemented) if isinstance(implemented, list) else 0) +
+                                     (len(partial) if isinstance(partial, list) else 0) +
+                                     (len(missing) if isinstance(missing, list) else 0) or 50,
                     "_source_doc": uploaded_file.original_name,
                     "_is_soc2": is_soc2,
                 })
 
                 await emitter.emit(
                     WebSocketEventType.FRAMEWORK_COMPLETE,
-                    f"{fw} analysis complete for {uploaded_file.original_name}",
-                    data={"framework": fw, "coverage": base_coverage},
+                    f"{fw} analysis complete for {uploaded_file.original_name}: {coverage_pct}%",
+                    data={"framework": fw, "coverage": coverage_pct},
                 )
 
-            # Generate findings for this document
-            # In production, this would come from actual AI analysis
-            doc_findings = [
-                {
-                    "severity": "high",
-                    "category": "access_control",
-                    "title": "Missing MFA enforcement",
-                    "description": "Multi-factor authentication not required for all users",
-                    "recommendation": "Implement mandatory MFA for all user accounts",
-                    "_from_soc2": is_soc2,
-                    "_source_doc": uploaded_file.original_name,
-                },
-                {
-                    "severity": "medium",
-                    "category": "encryption",
-                    "title": "Encryption at rest not documented",
-                    "description": "Data encryption at rest implementation not clearly documented",
-                    "recommendation": "Document encryption mechanisms and key management procedures",
-                    "_from_soc2": is_soc2,
-                    "_source_doc": uploaded_file.original_name,
-                },
-                {
-                    "severity": "medium",
-                    "category": "incident_response",
-                    "title": "Incident response plan review needed",
-                    "description": "Incident response procedures not reviewed in past 12 months",
-                    "recommendation": "Conduct annual review and testing of incident response plan",
-                    "_from_soc2": is_soc2,
-                    "_source_doc": uploaded_file.original_name,
-                },
-            ]
-
-            # Add some document-specific findings
-            if is_soc2:
-                doc_findings.append({
-                    "severity": "low",
-                    "category": "audit",
-                    "title": "SOC2 audit exceptions noted",
-                    "description": "Minor exceptions identified in latest SOC2 Type 2 audit",
-                    "recommendation": "Review and address audit exceptions before next assessment",
-                    "_from_soc2": True,
-                    "_source_doc": uploaded_file.original_name,
-                })
-
+            # Process findings from AI
+            doc_findings = ai_result.get("findings", [])
             for finding in doc_findings:
+                # Add tracking fields
+                finding["_from_soc2"] = is_soc2
+                finding["_source_doc"] = uploaded_file.original_name
+
                 await emitter.emit(
                     WebSocketEventType.FINDING_DISCOVERED,
-                    f"Found: {finding['title']}",
+                    f"Found: {finding.get('title', 'Unknown')}",
                     data={"finding": {k: v for k, v in finding.items() if not k.startswith("_")}},
                 )
                 all_findings.append(finding)
-                await asyncio.sleep(0.2)
+
+            # Process strengths from AI
+            doc_strengths = ai_result.get("strengths", [])
+            for strength in doc_strengths:
+                strength["_from_soc2"] = is_soc2
+                strength["_source_doc"] = uploaded_file.original_name
+                all_strengths.append(strength)
+
+            if doc_strengths:
+                await emitter.emit(
+                    WebSocketEventType.DOCUMENT_ANALYZING,
+                    f"Identified {len(doc_strengths)} strength(s) in {uploaded_file.original_name}",
+                    data={"strengths_count": len(doc_strengths)},
+                )
 
             update_analysis_job(
                 analysis_id,
@@ -508,27 +539,30 @@ async def run_analysis_with_streaming(
             progress_override=90,
         )
 
-        # Executive summary
+        # Executive summary - use AI to generate
         await emitter.emit(
             WebSocketEventType.EXECUTIVE_SUMMARY_GENERATING,
-            "Generating executive summary...",
+            "Generating executive summary with AI...",
             progress_override=92,
         )
 
-        await asyncio.sleep(1)
+        # Prepare framework coverage dict for summary generation
+        framework_coverage_dict = {}
+        for fw in consolidated_frameworks:
+            framework_coverage_dict[fw["framework"]] = {
+                "coverage_percentage": fw["coverage_percentage"],
+                "implemented_controls": fw["implemented_controls"],
+                "partial_controls": fw["partial_controls"],
+                "missing_controls": fw["missing_controls"],
+            }
 
-        # Build dynamic executive summary
-        critical_high_count = sum(1 for f in deduplicated_findings if f.get("severity", "").lower() in ["critical", "high"])
-        results["executive_summary"] = (
-            f"This assessment analyzed {total_files} document(s)"
-            f"{f', including {soc2_count} SOC2 Type 2 report(s)' if soc2_count > 0 else ''}. "
-            f"The vendor demonstrates {'strong' if avg_coverage >= 80 else 'moderate' if avg_coverage >= 60 else 'developing'} "
-            f"compliance maturity with an overall score of {avg_coverage:.0f}%. "
-            f"{len(deduplicated_findings)} unique findings were identified"
-            f"{f', including {critical_high_count} high-priority items requiring immediate attention' if critical_high_count > 0 else ''}. "
-            f"Inherent risk is assessed as {results['risk_assessment']['inherent_risk_level']} "
-            f"with residual risk at {results['risk_assessment']['residual_risk_level']} "
-            f"after accounting for implemented controls ({risk_reduction:.0f}% risk reduction)."
+        # Generate AI-powered executive summary
+        results["executive_summary"] = await ai_analyzer.generate_consolidated_summary(
+            all_findings=deduplicated_findings,
+            all_strengths=all_strengths,
+            framework_coverage=framework_coverage_dict,
+            document_count=total_files,
+            soc2_count=soc2_count,
         )
 
         # Calculate overall score

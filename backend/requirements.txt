@@ -24,3 +24,9 @@ weasyprint>=60.0
 
 # Security (rate limiting)
 slowapi>=0.1.9
+
+# Document parsing
+pypdf>=3.17.0
+python-docx>=1.1.0
+openpyxl>=3.1.2
+xlrd>=2.0.1
