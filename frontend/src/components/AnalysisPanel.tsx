@@ -44,9 +44,10 @@ export function AnalysisPanel() {
           description: 'Your compliance analysis is ready',
         });
 
-        // Fetch results
-        if (analysisId) {
-          api.getAnalysisResults(analysisId).then((response) => {
+        // Fetch results using analysis_id from event data (avoids stale closure)
+        const completedAnalysisId = event.data?.analysis_id || analysisId;
+        if (completedAnalysisId) {
+          api.getAnalysisResults(completedAnalysisId).then((response) => {
             if (response.data) {
               setResults(response.data as any);
             }
