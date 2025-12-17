@@ -45,7 +45,7 @@ export function AnalysisPanel() {
         });
 
         // Fetch results using analysis_id from event data (avoids stale closure)
-        const completedAnalysisId = event.data?.analysis_id || analysisId;
+        const completedAnalysisId = (event.data?.analysis_id as string) || analysisId;
         if (completedAnalysisId) {
           api.getAnalysisResults(completedAnalysisId).then((response) => {
             if (response.data) {
