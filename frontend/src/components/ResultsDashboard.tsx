@@ -290,29 +290,35 @@ export function ResultsDashboard() {
             <CardTitle>Risk Assessment</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 gap-4">
               <div className="text-center p-4 bg-muted rounded-lg">
-                <p className="text-sm text-muted-foreground">Inherent Risk</p>
-                <p className="text-2xl font-bold text-orange-500">
-                  {results.risk_assessment.inherent_risk_level}
+                <p className="text-sm text-muted-foreground">Security Posture</p>
+                <p className={`text-2xl font-bold ${
+                  results.risk_assessment.security_posture_score >= 80
+                    ? 'text-green-500'
+                    : results.risk_assessment.security_posture_score >= 60
+                    ? 'text-yellow-500'
+                    : 'text-red-500'
+                }`}>
+                  {results.risk_assessment.security_posture_level}
                 </p>
                 <p className="text-sm">
-                  Score: {results.risk_assessment.inherent_risk_score.toFixed(1)}
+                  Score: {results.risk_assessment.security_posture_score}/100
                 </p>
               </div>
               <div className="text-center p-4 bg-muted rounded-lg">
-                <p className="text-sm text-muted-foreground">Residual Risk</p>
-                <p className="text-2xl font-bold text-yellow-500">
-                  {results.risk_assessment.residual_risk_level}
+                <p className="text-sm text-muted-foreground">Overall Risk</p>
+                <p className={`text-2xl font-bold ${
+                  results.risk_assessment.overall_risk_score < 25
+                    ? 'text-green-500'
+                    : results.risk_assessment.overall_risk_score < 50
+                    ? 'text-yellow-500'
+                    : 'text-red-500'
+                }`}>
+                  {results.risk_assessment.overall_risk_level}
                 </p>
                 <p className="text-sm">
-                  Score: {results.risk_assessment.residual_risk_score.toFixed(1)}
-                </p>
-              </div>
-              <div className="text-center p-4 bg-muted rounded-lg">
-                <p className="text-sm text-muted-foreground">Risk Reduction</p>
-                <p className="text-2xl font-bold text-green-500">
-                  {results.risk_assessment.risk_reduction_percentage.toFixed(1)}%
+                  Score: {results.risk_assessment.overall_risk_score}/100
                 </p>
               </div>
             </div>

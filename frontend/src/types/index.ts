@@ -25,11 +25,10 @@ export interface FrameworkCoverage {
 }
 
 export interface RiskAssessment {
-  inherent_risk_level: string;
-  inherent_risk_score: number;
-  residual_risk_level: string;
-  residual_risk_score: number;
-  risk_reduction_percentage: number;
+  security_posture_score: number;
+  security_posture_level: string;
+  overall_risk_score: number;
+  overall_risk_level: string;
 }
 
 export interface AnalysisResults {
