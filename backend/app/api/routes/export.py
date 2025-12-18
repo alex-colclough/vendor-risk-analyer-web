@@ -149,11 +149,10 @@ async def generate_pdf_report(
 
     # Get risk assessment data
     risk = results.get("risk_assessment", {})
-    inherent_score = risk.get("inherent_risk_score", 0)
-    residual_score = risk.get("residual_risk_score", 0)
-    inherent_level = risk.get("inherent_risk_level", "N/A")
-    residual_level = risk.get("residual_risk_level", "N/A")
-    risk_reduction = risk.get("risk_reduction_percentage", 0)
+    security_posture_score = risk.get("security_posture_score", 0)
+    security_posture_level = risk.get("security_posture_level", "N/A")
+    overall_risk_score = risk.get("overall_risk_score", 0)
+    overall_risk_level = risk.get("overall_risk_level", "N/A")
 
     # Count findings by severity
     findings = results.get("findings", [])
@@ -418,17 +417,17 @@ async def generate_pdf_report(
                 <div class="score-box primary">
                     <div class="score-label">Overall Compliance</div>
                     <div class="score-value">{results.get("overall_compliance_score", 0):.0f}%</div>
-                    <div class="score-sublabel">Composite Score</div>
+                    <div class="score-sublabel">Framework Coverage</div>
                 </div>
-                <div class="score-box inherent">
-                    <div class="score-label">Inherent Risk</div>
-                    <div class="score-value" style="color: #c53030;">{inherent_score:.0f}</div>
-                    <div class="score-sublabel">{inherent_level}</div>
+                <div class="score-box" style="background: {'#c6f6d5' if security_posture_score >= 80 else '#fefcbf' if security_posture_score >= 60 else '#fed7d7'}; border: 2px solid {'#38a169' if security_posture_score >= 80 else '#d69e2e' if security_posture_score >= 60 else '#c53030'};">
+                    <div class="score-label">Security Posture</div>
+                    <div class="score-value" style="color: {'#38a169' if security_posture_score >= 80 else '#d69e2e' if security_posture_score >= 60 else '#c53030'};">{security_posture_score:.0f}</div>
+                    <div class="score-sublabel">{security_posture_level}</div>
                 </div>
-                <div class="score-box residual">
-                    <div class="score-label">Residual Risk</div>
-                    <div class="score-value" style="color: #d69e2e;">{residual_score:.0f}</div>
-                    <div class="score-sublabel">{residual_level} ({risk_reduction:.0f}% reduction)</div>
+                <div class="score-box" style="background: {'#c6f6d5' if overall_risk_score < 25 else '#fefcbf' if overall_risk_score < 50 else '#fed7d7'}; border: 2px solid {'#38a169' if overall_risk_score < 25 else '#d69e2e' if overall_risk_score < 50 else '#c53030'};">
+                    <div class="score-label">Overall Risk</div>
+                    <div class="score-value" style="color: {'#38a169' if overall_risk_score < 25 else '#d69e2e' if overall_risk_score < 50 else '#c53030'};">{overall_risk_score:.0f}</div>
+                    <div class="score-sublabel">{overall_risk_level}</div>
                 </div>
             </div>
         </div>
@@ -529,7 +528,7 @@ async def generate_pdf_report(
             <table>
                 <thead>
                     <tr>
-                        <th>Risk Metric</th>
+                        <th>Metric</th>
                         <th>Score</th>
                         <th>Rating</th>
                         <th>Description</th>
@@ -537,25 +536,33 @@ async def generate_pdf_report(
                 </thead>
                 <tbody>
                     <tr>
-                        <td><strong>Inherent Risk</strong></td>
-                        <td style="text-align: center; font-weight: 600;">{inherent_score:.1f}</td>
-                        <td><span class="severity-badge severity-high">{inherent_level}</span></td>
-                        <td>Risk level before considering existing controls</td>
+                        <td><strong>Security Posture</strong></td>
+                        <td style="text-align: center; font-weight: 600;">{security_posture_score:.0f}/100</td>
+                        <td><span class="severity-badge severity-{"low" if security_posture_score >= 80 else "medium" if security_posture_score >= 60 else "high"}">{security_posture_level}</span></td>
+                        <td>Overall security control maturity based on framework coverage (higher is better)</td>
                     </tr>
                     <tr>
-                        <td><strong>Residual Risk</strong></td>
-                        <td style="text-align: center; font-weight: 600;">{residual_score:.1f}</td>
-                        <td><span class="severity-badge severity-medium">{residual_level}</span></td>
-                        <td>Risk level after accounting for implemented controls</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Control Effectiveness</strong></td>
-                        <td style="text-align: center; font-weight: 600;">{risk_reduction:.1f}%</td>
-                        <td><span class="severity-badge severity-low">Moderate</span></td>
-                        <td>Percentage of inherent risk mitigated by controls</td>
+                        <td><strong>Overall Risk</strong></td>
+                        <td style="text-align: center; font-weight: 600;">{overall_risk_score:.0f}/100</td>
+                        <td><span class="severity-badge severity-{"low" if overall_risk_score < 25 else "medium" if overall_risk_score < 50 else "high" if overall_risk_score < 75 else "critical"}">{overall_risk_level}</span></td>
+                        <td>Aggregate risk score based on findings severity (lower is better)</td>
                     </tr>
                 </tbody>
             </table>
+
+            <div style="margin-top: 20px; padding: 15px; background: #f7fafc; border-radius: 8px;">
+                <h3 style="margin: 0 0 10px 0; font-size: 11pt;">Score Interpretation</h3>
+                <table style="font-size: 9pt;">
+                    <tr>
+                        <td style="padding: 5px 15px 5px 0; border: none;"><strong>Security Posture:</strong></td>
+                        <td style="padding: 5px; border: none;">80-100 = Strong | 60-79 = Moderate | 40-59 = Developing | 0-39 = Weak</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 5px 15px 5px 0; border: none;"><strong>Overall Risk:</strong></td>
+                        <td style="padding: 5px; border: none;">0-24 = Low | 25-49 = Medium | 50-74 = High | 75-100 = Critical</td>
+                    </tr>
+                </table>
+            </div>
         </div>
         '''}
 

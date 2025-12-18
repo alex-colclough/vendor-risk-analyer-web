@@ -515,30 +515,49 @@ async def run_analysis_with_streaming(
 
         await asyncio.sleep(1.5)
 
-        # Calculate risk scores based on findings
-        severity_weights = {"critical": 10, "high": 7, "medium": 4, "low": 1}
-        total_risk_points = sum(
-            severity_weights.get(f.get("severity", "").lower(), 0)
-            for f in deduplicated_findings
-        )
-        max_risk = len(deduplicated_findings) * 10  # If all were critical
-
-        inherent_score = min(100, 40 + total_risk_points)
-
-        # Residual risk reduced by compliance score
+        # Calculate Security Posture Score (0-100, higher is better)
+        # Based on framework coverage - average of all framework coverage percentages
         avg_coverage = (
             sum(fw["coverage_percentage"] for fw in consolidated_frameworks) / len(consolidated_frameworks)
             if consolidated_frameworks else 50
         )
-        residual_score = inherent_score * (1 - (avg_coverage / 150))  # Coverage reduces risk
-        risk_reduction = ((inherent_score - residual_score) / inherent_score * 100) if inherent_score > 0 else 0
+        security_posture_score = round(avg_coverage, 1)
+
+        # Determine security posture level
+        if security_posture_score >= 80:
+            security_posture_level = "Strong"
+        elif security_posture_score >= 60:
+            security_posture_level = "Moderate"
+        elif security_posture_score >= 40:
+            security_posture_level = "Developing"
+        else:
+            security_posture_level = "Weak"
+
+        # Calculate Overall Risk Score (0-100, lower is better)
+        # Based on findings severity - weighted sum normalized to 100
+        severity_weights = {"critical": 25, "high": 15, "medium": 7, "low": 2}
+        total_risk_points = sum(
+            severity_weights.get(f.get("severity", "").lower(), 0)
+            for f in deduplicated_findings
+        )
+        # Cap at 100, with baseline of 0 if no findings
+        overall_risk_score = min(100, total_risk_points)
+
+        # Determine overall risk level
+        if overall_risk_score >= 75:
+            overall_risk_level = "Critical"
+        elif overall_risk_score >= 50:
+            overall_risk_level = "High"
+        elif overall_risk_score >= 25:
+            overall_risk_level = "Medium"
+        else:
+            overall_risk_level = "Low"
 
         results["risk_assessment"] = {
-            "inherent_risk_level": "Critical" if inherent_score >= 80 else "High" if inherent_score >= 60 else "Medium" if inherent_score >= 40 else "Low",
-            "inherent_risk_score": round(inherent_score, 1),
-            "residual_risk_level": "Critical" if residual_score >= 80 else "High" if residual_score >= 60 else "Medium" if residual_score >= 40 else "Low",
-            "residual_risk_score": round(residual_score, 1),
-            "risk_reduction_percentage": round(risk_reduction, 1),
+            "security_posture_score": security_posture_score,
+            "security_posture_level": security_posture_level,
+            "overall_risk_score": overall_risk_score,
+            "overall_risk_level": overall_risk_level,
         }
 
         await emitter.emit(
