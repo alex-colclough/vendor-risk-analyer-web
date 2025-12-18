@@ -14,5 +14,13 @@ export function formatBytes(bytes: number): string {
 }
 
 export function generateSessionId(): string {
-  return `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  // Use cryptographically secure random values
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return `session-${crypto.randomUUID()}`;
+  }
+  // Fallback for older environments using crypto.getRandomValues
+  const array = new Uint8Array(16);
+  crypto.getRandomValues(array);
+  const hex = Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `session-${hex}`;
 }
