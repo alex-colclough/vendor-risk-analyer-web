@@ -1,20 +1,67 @@
 """Chat endpoints for AI assistant."""
 
+import logging
+import re
 import secrets
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.api.routes.analysis import analysis_jobs
 from app.config import settings
+from app.rate_limiter import limiter
 from app.models.requests import ChatRequest
 from app.models.responses import ChatMessageResponse, ErrorResponse
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # In-memory chat history (use Redis in production)
 chat_histories: dict[str, list[dict]] = {}
+
+# Maximum message length
+MAX_MESSAGE_LENGTH = 4000
+
+
+def sanitize_chat_message(message: str) -> str:
+    """
+    Sanitize user chat message to prevent prompt injection attacks.
+
+    This function:
+    1. Limits message length
+    2. Removes potential prompt injection patterns
+    3. Normalizes whitespace
+    """
+    if not message:
+        return ""
+
+    # Limit length
+    message = message[:MAX_MESSAGE_LENGTH]
+
+    # Remove potential prompt injection patterns (case-insensitive)
+    dangerous_patterns = [
+        r"ignore\s+(all\s+)?previous\s+instructions?",
+        r"disregard\s+(all\s+)?previous",
+        r"forget\s+(all\s+)?previous",
+        r"you\s+are\s+now\s+a",
+        r"act\s+as\s+if\s+you\s+are",
+        r"pretend\s+(you\s+are|to\s+be)",
+        r"system\s*:\s*",
+        r"assistant\s*:\s*",
+        r"human\s*:\s*",
+        r"<\|.*?\|>",  # Special tokens
+        r"\[INST\]|\[/INST\]",  # Instruction markers
+        r"<<SYS>>|<</SYS>>",  # System markers
+    ]
+
+    for pattern in dangerous_patterns:
+        message = re.sub(pattern, "[filtered]", message, flags=re.IGNORECASE)
+
+    # Normalize whitespace
+    message = " ".join(message.split())
+
+    return message.strip()
 
 
 @router.post(
@@ -22,7 +69,8 @@ chat_histories: dict[str, list[dict]] = {}
     response_model=ChatMessageResponse,
     responses={400: {"model": ErrorResponse}},
 )
-async def send_chat_message(request: ChatRequest):
+@limiter.limit("30/minute")  # 30 messages per minute per IP
+async def send_chat_message(request: Request, chat_request: ChatRequest):
     """
     Send a chat message to the AI assistant.
 
@@ -32,30 +80,36 @@ async def send_chat_message(request: ChatRequest):
     For streaming responses, use the WebSocket endpoint
     /ws/chat/{session_id} instead.
     """
-    # Initialize chat history for session if needed
-    if request.session_id not in chat_histories:
-        chat_histories[request.session_id] = []
+    # Sanitize user message
+    sanitized_message = sanitize_chat_message(chat_request.message)
 
-    # Add user message to history
+    if not sanitized_message or len(sanitized_message) < 2:
+        raise HTTPException(status_code=400, detail="Message too short or invalid")
+
+    # Initialize chat history for session if needed
+    if chat_request.session_id not in chat_histories:
+        chat_histories[chat_request.session_id] = []
+
+    # Add user message to history (using sanitized version)
     user_message = {
         "role": "user",
-        "content": request.message,
+        "content": sanitized_message,
         "timestamp": datetime.utcnow(),
     }
-    chat_histories[request.session_id].append(user_message)
+    chat_histories[chat_request.session_id].append(user_message)
 
     try:
         # Build context from analysis results if available and requested
         context = ""
-        if request.include_context:
-            context = await build_analysis_context(request.session_id)
+        if chat_request.include_context:
+            context = await build_analysis_context(chat_request.session_id)
 
         # Generate response using Bedrock
         response_content = await generate_chat_response(
-            request.session_id,
-            request.message,
+            chat_request.session_id,
+            sanitized_message,  # Use sanitized message
             context,
-            chat_histories[request.session_id],
+            chat_histories[chat_request.session_id],
         )
 
         # Add assistant message to history
@@ -64,7 +118,7 @@ async def send_chat_message(request: ChatRequest):
             "content": response_content,
             "timestamp": datetime.utcnow(),
         }
-        chat_histories[request.session_id].append(assistant_message)
+        chat_histories[chat_request.session_id].append(assistant_message)
 
         return ChatMessageResponse(
             message_id=secrets.token_urlsafe(8),
@@ -74,9 +128,11 @@ async def send_chat_message(request: ChatRequest):
         )
 
     except Exception as e:
+        # Log error details server-side, return generic message to client
+        logger.error(f"Chat error for session {chat_request.session_id}: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to generate response: {str(e)}",
+            detail="Failed to generate response. Please try again.",
         )
 
 

@@ -1,7 +1,8 @@
 """File upload endpoints with security validation."""
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
+from app.rate_limiter import limiter
 from app.models.responses import (
     ErrorResponse,
     FileListResponse,
@@ -18,7 +19,9 @@ file_manager = FileManager()
     response_model=UploadResponse,
     responses={400: {"model": ErrorResponse}, 413: {"model": ErrorResponse}},
 )
+@limiter.limit("20/minute")  # 20 uploads per minute per IP
 async def upload_file(
+    request: Request,
     session_id: str = Form(..., min_length=1, max_length=64),
     file: UploadFile = File(...),
 ):

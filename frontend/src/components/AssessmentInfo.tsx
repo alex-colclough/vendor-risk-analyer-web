@@ -6,6 +6,18 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useStore } from '@/store';
 
+/**
+ * Sanitize user input to prevent XSS and injection attacks.
+ * This provides client-side validation in addition to server-side sanitization.
+ */
+function sanitizeInput(value: string, maxLength: number = 100): string {
+  return value
+    .replace(/[<>]/g, '') // Remove angle brackets (basic XSS prevention)
+    .replace(/[\x00-\x1F\x7F]/g, '') // Remove control characters
+    .trim()
+    .substring(0, maxLength);
+}
+
 export function AssessmentInfo() {
   const {
     vendorName,
@@ -15,6 +27,18 @@ export function AssessmentInfo() {
     setReviewedBy,
     setTicketNumber,
   } = useStore();
+
+  const handleVendorNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setVendorName(sanitizeInput(e.target.value, 100));
+  };
+
+  const handleReviewedByChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setReviewedBy(sanitizeInput(e.target.value, 100));
+  };
+
+  const handleTicketNumberChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setTicketNumber(sanitizeInput(e.target.value, 50));
+  };
 
   return (
     <Card>
@@ -34,8 +58,9 @@ export function AssessmentInfo() {
             id="vendor-name"
             placeholder="Enter vendor name (e.g., Acme Corp)"
             value={vendorName}
-            onChange={(e) => setVendorName(e.target.value)}
+            onChange={handleVendorNameChange}
             maxLength={100}
+            pattern="[A-Za-z0-9\s\-\.\,\&]+"
           />
           <p className="text-xs text-muted-foreground">
             Used in the report title and exported filename
@@ -51,8 +76,9 @@ export function AssessmentInfo() {
             id="reviewed-by"
             placeholder="Enter analyst name"
             value={reviewedBy}
-            onChange={(e) => setReviewedBy(e.target.value)}
+            onChange={handleReviewedByChange}
             maxLength={100}
+            pattern="[A-Za-z0-9\s\-\.\,]+"
           />
           <p className="text-xs text-muted-foreground">
             Name of the analyst performing the review
@@ -68,8 +94,9 @@ export function AssessmentInfo() {
             id="ticket-number"
             placeholder="Enter ticket or request number"
             value={ticketNumber}
-            onChange={(e) => setTicketNumber(e.target.value)}
+            onChange={handleTicketNumberChange}
             maxLength={50}
+            pattern="[A-Za-z0-9\-\_]+"
           />
           <p className="text-xs text-muted-foreground">
             Reference number for tracking (e.g., JIRA-1234)

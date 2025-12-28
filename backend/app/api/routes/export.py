@@ -3,14 +3,23 @@
 import json
 import re
 from datetime import datetime
+from html import escape as html_escape
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
 from app.api.routes.analysis import analysis_jobs
+from app.rate_limiter import limiter
 from app.models.responses import AnalysisStatus
 
 router = APIRouter()
+
+
+def escape_html(text: str) -> str:
+    """Safely escape HTML to prevent XSS in PDF generation."""
+    if not text:
+        return ""
+    return html_escape(str(text), quote=True)
 
 
 def sanitize_filename(name: str) -> str:
@@ -24,7 +33,8 @@ def sanitize_filename(name: str) -> str:
 
 
 @router.get("/export/json/{analysis_id}")
-async def export_json(analysis_id: str):
+@limiter.limit("30/minute")  # 30 exports per minute per IP
+async def export_json(request: Request, analysis_id: str):
     """
     Download analysis results as JSON.
 
@@ -84,7 +94,8 @@ async def export_json(analysis_id: str):
 
 
 @router.get("/export/pdf/{analysis_id}")
-async def export_pdf(analysis_id: str):
+@limiter.limit("10/minute")  # 10 PDF exports per minute per IP (expensive operation)
+async def export_pdf(request: Request, analysis_id: str):
     """
     Download analysis results as PDF report.
 
@@ -144,18 +155,55 @@ async def export_pdf(analysis_id: str):
 async def generate_pdf_report(
     analysis_id: str, job: dict, results: dict
 ) -> bytes:
-    """Generate PDF report from analysis results."""
+    """Generate PDF report from analysis results with XSS protection."""
     from weasyprint import HTML
+
+    # Escape all user-controlled data to prevent XSS in PDF
+    safe_vendor_name = escape_html(job.get("vendor_name", ""))
+    safe_reviewed_by = escape_html(job.get("reviewed_by", ""))
+    safe_ticket_number = escape_html(job.get("ticket_number", ""))
+    safe_frameworks = [escape_html(fw) for fw in job.get("frameworks", [])]
+    safe_executive_summary = escape_html(results.get("executive_summary", "No summary available."))
+
+    # Escape finding data
+    findings = results.get("findings", [])
+    safe_findings = []
+    for f in findings:
+        safe_findings.append({
+            "severity": escape_html(f.get("severity", "")),
+            "category": escape_html(f.get("category", "")),
+            "title": escape_html(f.get("title", "Untitled Finding")),
+            "description": escape_html(f.get("description", "No description provided.")),
+            "root_cause": escape_html(f.get("root_cause", "")),
+            "business_impact": escape_html(f.get("business_impact", "")),
+            "control_references": [escape_html(ref) for ref in f.get("control_references", [])] if isinstance(f.get("control_references"), list) else escape_html(f.get("control_references", "")),
+            "evidence": escape_html(f.get("evidence", "No specific evidence cited.")),
+            "recommendation": escape_html(f.get("recommendation", "No recommendation provided.")),
+            "remediation_effort": escape_html(f.get("remediation_effort", "")),
+            "remediation_timeline": escape_html(f.get("remediation_timeline", "To be determined")),
+            "finding_id": escape_html(f.get("finding_id", "")),
+        })
+
+    # Escape framework data
+    frameworks = results.get("frameworks", [])
+    safe_framework_data = []
+    for fw in frameworks:
+        safe_framework_data.append({
+            "framework": escape_html(fw.get("framework", "")),
+            "coverage_percentage": fw.get("coverage_percentage", 0),
+            "implemented_controls": fw.get("implemented_controls", 0),
+            "partial_controls": fw.get("partial_controls", 0),
+            "missing_controls": fw.get("missing_controls", 0),
+        })
 
     # Get risk assessment data
     risk = results.get("risk_assessment", {})
     security_posture_score = risk.get("security_posture_score", 0)
-    security_posture_level = risk.get("security_posture_level", "N/A")
+    security_posture_level = escape_html(risk.get("security_posture_level", "N/A"))
     overall_risk_score = risk.get("overall_risk_score", 0)
-    overall_risk_level = risk.get("overall_risk_level", "N/A")
+    overall_risk_level = escape_html(risk.get("overall_risk_level", "N/A"))
 
     # Count findings by severity
-    findings = results.get("findings", [])
     severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     for f in findings:
         sev = f.get("severity", "").lower()
@@ -396,12 +444,12 @@ async def generate_pdf_report(
         <!-- Cover Page -->
         <div class="cover-page">
             <div class="cover-title">Vendor Security<br>Assessment Report</div>
-            <div class="cover-subtitle">{f'<strong>{job.get("vendor_name", "")}</strong><br>' if job.get("vendor_name") else ''}Third-Party Risk Analysis &amp; Compliance Review</div>
+            <div class="cover-subtitle">{f'<strong>{safe_vendor_name}</strong><br>' if safe_vendor_name else ''}Third-Party Risk Analysis &amp; Compliance Review</div>
             <div class="cover-meta">
-                {f'<p><strong>Vendor:</strong> {job.get("vendor_name")}</p>' if job.get("vendor_name") else ''}
+                {f'<p><strong>Vendor:</strong> {safe_vendor_name}</p>' if safe_vendor_name else ''}
                 <p><strong>Report ID:</strong> {analysis_id[:16].upper()}</p>
                 <p><strong>Assessment Date:</strong> {datetime.utcnow().strftime("%B %d, %Y")}</p>
-                <p><strong>Frameworks Evaluated:</strong> {", ".join(job.get("frameworks", []))}</p>
+                <p><strong>Frameworks Evaluated:</strong> {", ".join(safe_frameworks)}</p>
                 <p><strong>Classification:</strong> CONFIDENTIAL</p>
             </div>
         </div>
@@ -410,7 +458,7 @@ async def generate_pdf_report(
         <h1>1. Executive Summary</h1>
         <div class="section">
             <div class="executive-summary">
-                {results.get("executive_summary", "No summary available.")}
+                {safe_executive_summary}
             </div>
 
             <div class="score-container">
@@ -461,7 +509,7 @@ async def generate_pdf_report(
         <div class="section" style="margin-bottom: 20px; border: 1px solid #e2e8f0; border-radius: 8px; padding: 15px; page-break-inside: avoid;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                 <span class="severity-badge severity-{f.get("severity", "").lower()}">{f.get("severity", "").upper()}</span>
-                <span style="font-size: 9pt; color: #718096;">{f.get("finding_id", f"F-{i+1:03d}")}</span>
+                <span style="font-size: 9pt; color: #718096;">{f.get("finding_id") or f"F-{i+1:03d}"}</span>
             </div>
             <h3 style="margin: 0 0 10px 0; color: #1a365d;">{f.get("title", "Untitled Finding")}</h3>
             <table style="width: 100%; font-size: 9pt; margin: 0;">
@@ -475,7 +523,7 @@ async def generate_pdf_report(
                 </tr>
                 {f'<tr><td style="font-weight: 600; vertical-align: top; padding: 5px 10px 5px 0; border: none;">Root Cause:</td><td style="padding: 5px 0; border: none;">{f.get("root_cause")}</td></tr>' if f.get("root_cause") else ""}
                 {f'<tr><td style="font-weight: 600; vertical-align: top; padding: 5px 10px 5px 0; border: none;">Business Impact:</td><td style="padding: 5px 0; border: none; color: #c53030;">{f.get("business_impact")}</td></tr>' if f.get("business_impact") else ""}
-                {f'<tr><td style="font-weight: 600; vertical-align: top; padding: 5px 10px 5px 0; border: none;">Control References:</td><td style="padding: 5px 0; border: none; font-family: monospace; font-size: 8pt;">{", ".join(f.get("control_references", [])) if isinstance(f.get("control_references"), list) else f.get("control_references", "")}</td></tr>' if f.get("control_references") else ""}
+                {f'<tr><td style="font-weight: 600; vertical-align: top; padding: 5px 10px 5px 0; border: none;">Control References:</td><td style="padding: 5px 0; border: none; font-family: monospace; font-size: 8pt;">{", ".join(f.get("control_references")) if isinstance(f.get("control_references"), list) else f.get("control_references", "")}</td></tr>' if f.get("control_references") else ""}
                 <tr>
                     <td style="font-weight: 600; vertical-align: top; padding: 5px 10px 5px 0; border: none;">Evidence:</td>
                     <td style="padding: 5px 0; border: none; font-style: italic; color: #4a5568;">"{f.get("evidence", "No specific evidence cited.")}"</td>
@@ -487,7 +535,7 @@ async def generate_pdf_report(
                 {f'<tr><td style="font-weight: 600; vertical-align: top; padding: 5px 10px 5px 0; border: none;">Remediation Effort:</td><td style="padding: 5px 0; border: none;"><span style="background: #{"fed7d7" if f.get("remediation_effort") == "high" else "#fefcbf" if f.get("remediation_effort") == "medium" else "#c6f6d5"}; padding: 2px 8px; border-radius: 4px; font-size: 8pt;">{f.get("remediation_effort", "").upper()}</span> &nbsp; <span style="color: #718096;">Timeline: {f.get("remediation_timeline", "To be determined")}</span></td></tr>' if f.get("remediation_effort") else ""}
             </table>
         </div>
-        ''' for i, f in enumerate(findings))}
+        ''' for i, f in enumerate(safe_findings))}
 
         <!-- Framework Coverage -->
         <h1 class="page-break">4. Framework Coverage Analysis</h1>
@@ -516,7 +564,7 @@ async def generate_pdf_report(
                         <td style="text-align: center; color: #d69e2e; font-weight: 600;">{fw.get("partial_controls", 0)}</td>
                         <td style="text-align: center; color: #c53030; font-weight: 600;">{fw.get("missing_controls", 0)}</td>
                     </tr>
-                    ''' for fw in results.get("frameworks", []))}
+                    ''' for fw in safe_framework_data)}
                 </tbody>
             </table>
         </div>
@@ -573,15 +621,15 @@ async def generate_pdf_report(
                 <tbody>
                     <tr>
                         <td style="width: 30%; padding: 15px; background: #f7fafc; font-weight: 600; border-bottom: 1px solid #e2e8f0;">Vendor Assessed:</td>
-                        <td style="padding: 15px; border-bottom: 1px solid #e2e8f0; font-size: 12pt;">{job.get("vendor_name") or "Not specified"}</td>
+                        <td style="padding: 15px; border-bottom: 1px solid #e2e8f0; font-size: 12pt;">{safe_vendor_name or "Not specified"}</td>
                     </tr>
                     <tr>
                         <td style="padding: 15px; background: #f7fafc; font-weight: 600; border-bottom: 1px solid #e2e8f0;">Reviewed By:</td>
-                        <td style="padding: 15px; border-bottom: 1px solid #e2e8f0; font-size: 12pt;">{job.get("reviewed_by") or "Not specified"}</td>
+                        <td style="padding: 15px; border-bottom: 1px solid #e2e8f0; font-size: 12pt;">{safe_reviewed_by or "Not specified"}</td>
                     </tr>
                     <tr>
                         <td style="padding: 15px; background: #f7fafc; font-weight: 600; border-bottom: 1px solid #e2e8f0;">Ticket/Request Number:</td>
-                        <td style="padding: 15px; border-bottom: 1px solid #e2e8f0; font-size: 12pt;">{job.get("ticket_number") or "Not specified"}</td>
+                        <td style="padding: 15px; border-bottom: 1px solid #e2e8f0; font-size: 12pt;">{safe_ticket_number or "Not specified"}</td>
                     </tr>
                     <tr>
                         <td style="padding: 15px; background: #f7fafc; font-weight: 600; border-bottom: 1px solid #e2e8f0;">Assessment Date:</td>
@@ -593,7 +641,7 @@ async def generate_pdf_report(
                     </tr>
                     <tr>
                         <td style="padding: 15px; background: #f7fafc; font-weight: 600;">Frameworks Evaluated:</td>
-                        <td style="padding: 15px;">{", ".join(job.get("frameworks", []))}</td>
+                        <td style="padding: 15px;">{", ".join(safe_frameworks)}</td>
                     </tr>
                 </tbody>
             </table>
@@ -687,8 +735,8 @@ async def generate_pdf_report(
         <div class="footer">
             <p><strong>Generated by:</strong> Vendor Security Analyzer (AI-Powered Third-Party Risk Assessment)</p>
             <p><strong>Report Generated:</strong> {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")}</p>
-            <p><strong>Vendor:</strong> {job.get("vendor_name") or "Not specified"} | <strong>Reviewed by:</strong> {job.get("reviewed_by") or "Not specified"} | <strong>Ticket:</strong> {job.get("ticket_number") or "N/A"}</p>
-            <p><strong>Assessment Frameworks:</strong> {", ".join(job.get("frameworks", []))}</p>
+            <p><strong>Vendor:</strong> {safe_vendor_name or "Not specified"} | <strong>Reviewed by:</strong> {safe_reviewed_by or "Not specified"} | <strong>Ticket:</strong> {safe_ticket_number or "N/A"}</p>
+            <p><strong>Assessment Frameworks:</strong> {", ".join(safe_frameworks)}</p>
             <p style="margin-top: 10px;">This document contains confidential information intended solely for the authorized recipient(s).
             Unauthorized distribution, copying, or disclosure is strictly prohibited.</p>
         </div>

@@ -5,9 +5,10 @@ import secrets
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.config import settings
+from app.rate_limiter import limiter
 from app.models.requests import AnalysisRequest
 from app.models.responses import (
     AnalysisResultsResponse,
@@ -29,7 +30,8 @@ analysis_jobs: dict[str, dict] = {}
     response_model=AnalysisStartResponse,
     responses={400: {"model": ErrorResponse}},
 )
-async def start_analysis(request: AnalysisRequest):
+@limiter.limit("10/hour")  # 10 analyses per hour per IP
+async def start_analysis(request: Request, analysis_request: AnalysisRequest):
     """
     Start compliance analysis on uploaded documents.
 
@@ -38,7 +40,7 @@ async def start_analysis(request: AnalysisRequest):
     or poll /analysis/{analysis_id}/status for status.
     """
     # Validate session has files
-    files = await file_manager.get_session_files(request.session_id)
+    files = await file_manager.get_session_files(analysis_request.session_id)
     if not files:
         raise HTTPException(
             status_code=400,
@@ -50,11 +52,11 @@ async def start_analysis(request: AnalysisRequest):
 
     # Store job info
     analysis_jobs[analysis_id] = {
-        "session_id": request.session_id,
-        "frameworks": request.frameworks,
-        "vendor_name": request.vendor_name,
-        "reviewed_by": request.reviewed_by,
-        "ticket_number": request.ticket_number,
+        "session_id": analysis_request.session_id,
+        "frameworks": analysis_request.frameworks,
+        "vendor_name": analysis_request.vendor_name,
+        "reviewed_by": analysis_request.reviewed_by,
+        "ticket_number": analysis_request.ticket_number,
         "status": AnalysisStatus.PENDING,
         "progress": 0,
         "current_step": None,
@@ -69,9 +71,9 @@ async def start_analysis(request: AnalysisRequest):
 
     return AnalysisStartResponse(
         analysis_id=analysis_id,
-        session_id=request.session_id,
+        session_id=analysis_request.session_id,
         status=AnalysisStatus.PENDING,
-        message=f"Analysis queued. Connect to WebSocket /ws/analysis/{request.session_id} to start and receive progress updates.",
+        message=f"Analysis queued. Connect to WebSocket /ws/analysis/{analysis_request.session_id} to start and receive progress updates.",
     )
 
 
