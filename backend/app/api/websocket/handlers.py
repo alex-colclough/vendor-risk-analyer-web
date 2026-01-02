@@ -491,10 +491,16 @@ async def run_analysis_with_streaming(
         # Consolidate framework coverage
         consolidated_frameworks = consolidate_framework_coverage(all_framework_results)
 
+        # Clean up strengths (remove internal tracking fields)
+        cleaned_strengths = []
+        for s in all_strengths:
+            cleaned_strengths.append({k: v for k, v in s.items() if not k.startswith("_")})
+
         results = {
             "overall_compliance_score": 0,
             "frameworks": consolidated_frameworks,
             "findings": deduplicated_findings,
+            "strengths": cleaned_strengths,
             "risk_assessment": None,
             "executive_summary": None,
         }
@@ -553,7 +559,95 @@ async def run_analysis_with_streaming(
         else:
             overall_risk_level = "Low"
 
+        # === NEW: Okta-style Inherent/Residual Risk Model ===
+
+        # Calculate Inherent Risk Score (0-100, risk BEFORE considering controls)
+        # Based on: data sensitivity, regulatory impact, business criticality, access scope, threat landscape
+        # For now, estimate based on frameworks analyzed and document types
+        inherent_risk_base = 50  # Medium baseline
+        if "HIPAA" in frameworks or "PCI_DSS" in frameworks:
+            inherent_risk_base += 15  # Regulated data increases inherent risk
+        if "SOC2" in frameworks:
+            inherent_risk_base += 5  # SOC2 implies critical service
+        if soc2_count > 0:
+            inherent_risk_base += 5  # Having SOC2 reports suggests critical vendor
+        inherent_risk_score = min(100, inherent_risk_base)
+
+        # Determine inherent risk level
+        if inherent_risk_score >= 75:
+            inherent_risk_level = "Critical"
+        elif inherent_risk_score >= 50:
+            inherent_risk_level = "High"
+        elif inherent_risk_score >= 30:
+            inherent_risk_level = "Medium"
+        else:
+            inherent_risk_level = "Low"
+
+        # Calculate Control Effectiveness (0-100%, how much controls reduce risk)
+        # Based on: framework coverage, strengths identified, findings severity
+        base_effectiveness = avg_coverage  # Start with coverage as baseline
+        # Boost for strengths (max +15%)
+        strength_bonus = min(15, len(cleaned_strengths) * 3)
+        # Penalty for critical/high findings (max -30%)
+        critical_count = sum(1 for f in deduplicated_findings if f.get("severity", "").lower() == "critical")
+        high_count = sum(1 for f in deduplicated_findings if f.get("severity", "").lower() == "high")
+        finding_penalty = min(30, critical_count * 10 + high_count * 5)
+
+        control_effectiveness_score = max(0, min(100, base_effectiveness + strength_bonus - finding_penalty))
+
+        # Determine control effectiveness level
+        if control_effectiveness_score >= 80:
+            control_effectiveness_level = "Strong"
+        elif control_effectiveness_score >= 60:
+            control_effectiveness_level = "Adequate"
+        elif control_effectiveness_score >= 40:
+            control_effectiveness_level = "Developing"
+        else:
+            control_effectiveness_level = "Weak"
+
+        # Calculate Residual Risk Score (0-100, risk AFTER controls)
+        # Formula: Inherent Risk × (1 - Control Effectiveness%)
+        residual_risk_score = round(inherent_risk_score * (1 - control_effectiveness_score / 100), 1)
+
+        # Determine residual risk level
+        if residual_risk_score >= 50:
+            residual_risk_level = "Critical"
+        elif residual_risk_score >= 30:
+            residual_risk_level = "High"
+        elif residual_risk_score >= 15:
+            residual_risk_level = "Medium"
+        else:
+            residual_risk_level = "Low"
+
+        # Calculate risk reduction percentage
+        risk_reduction = round(((inherent_risk_score - residual_risk_score) / inherent_risk_score * 100) if inherent_risk_score > 0 else 0, 0)
+
+        # Determine recommendation
+        if residual_risk_level == "Low":
+            recommendation = "APPROVED"
+            recommendation_details = "Vendor demonstrates strong security controls. Standard monitoring and annual reassessment recommended."
+        elif residual_risk_level == "Medium":
+            recommendation = "APPROVED WITH CONDITIONS"
+            recommendation_details = "Vendor demonstrates adequate security controls with some areas for improvement. Enhanced monitoring recommended."
+        elif residual_risk_level == "High":
+            recommendation = "CONDITIONAL"
+            recommendation_details = "Significant security gaps identified. Remediation commitments required before engagement."
+        else:
+            recommendation = "NOT RECOMMENDED"
+            recommendation_details = "Critical security deficiencies identified. Engagement not recommended until material issues resolved."
+
         results["risk_assessment"] = {
+            # New Okta-style fields
+            "inherent_risk_score": inherent_risk_score,
+            "inherent_risk_level": inherent_risk_level,
+            "control_effectiveness_score": round(control_effectiveness_score, 1),
+            "control_effectiveness_level": control_effectiveness_level,
+            "residual_risk_score": residual_risk_score,
+            "residual_risk_level": residual_risk_level,
+            "risk_reduction_percentage": risk_reduction,
+            "recommendation": recommendation,
+            "recommendation_details": recommendation_details,
+            # Legacy fields for backward compatibility
             "security_posture_score": security_posture_score,
             "security_posture_level": security_posture_level,
             "overall_risk_score": overall_risk_score,

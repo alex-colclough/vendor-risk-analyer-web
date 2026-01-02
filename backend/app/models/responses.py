@@ -83,13 +83,40 @@ class FrameworkCoverage(BaseModel):
     total_controls: int
 
 
-class RiskAssessment(BaseModel):
-    """Risk assessment summary."""
+class Strength(BaseModel):
+    """A vendor security strength."""
 
+    category: str
+    title: str
+    description: str
+    control_references: list[str] = Field(default_factory=list)
+    evidence: str = ""
+
+
+class RiskAssessment(BaseModel):
+    """Risk assessment summary with inherent/residual risk model."""
+
+    # Inherent Risk (before controls) - 0-100, higher = more risk
+    inherent_risk_score: float
+    inherent_risk_level: str  # Critical, High, Medium, Low
+
+    # Control Effectiveness - percentage reduction
+    control_effectiveness_score: float  # 0-100%
+    control_effectiveness_level: str  # Strong, Adequate, Developing, Weak
+
+    # Residual Risk (after controls) - 0-100, lower = better
+    residual_risk_score: float
+    residual_risk_level: str  # Critical, High, Medium, Low
+
+    # Legacy fields for backward compatibility
     security_posture_score: float
     security_posture_level: str
     overall_risk_score: float
     overall_risk_level: str
+
+    # Overall recommendation
+    recommendation: str = ""  # APPROVED, CONDITIONAL, NOT RECOMMENDED
+    recommendation_details: str = ""
 
 
 class AnalysisResultsResponse(BaseModel):
@@ -100,6 +127,7 @@ class AnalysisResultsResponse(BaseModel):
     overall_compliance_score: float
     frameworks: list[FrameworkCoverage]
     findings: list[Finding]
+    strengths: list[Strength] = Field(default_factory=list)
     risk_assessment: Optional[RiskAssessment] = None
     executive_summary: Optional[str] = None
     completed_at: Optional[datetime] = None

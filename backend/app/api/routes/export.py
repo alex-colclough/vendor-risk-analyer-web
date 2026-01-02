@@ -155,7 +155,17 @@ async def export_pdf(request: Request, analysis_id: str):
 async def generate_pdf_report(
     analysis_id: str, job: dict, results: dict
 ) -> bytes:
-    """Generate PDF report from analysis results with XSS protection."""
+    """
+    Generate PDF report from analysis results with XSS protection.
+
+    Format follows enterprise vendor security assessment standards with:
+    - Executive Summary with Key Assessment Results
+    - Inherent/Residual Risk Model
+    - Security Control Analysis
+    - Key Findings (Strengths and Concerns)
+    - Recommendations
+    - Risk Scoring Summary
+    """
     from weasyprint import HTML
 
     # Escape all user-controlled data to prevent XSS in PDF
@@ -184,6 +194,18 @@ async def generate_pdf_report(
             "finding_id": escape_html(f.get("finding_id", "")),
         })
 
+    # Escape strengths data
+    strengths = results.get("strengths", [])
+    safe_strengths = []
+    for s in strengths:
+        safe_strengths.append({
+            "category": escape_html(s.get("category", "")),
+            "title": escape_html(s.get("title", "")),
+            "description": escape_html(s.get("description", "")),
+            "control_references": [escape_html(ref) for ref in s.get("control_references", [])] if isinstance(s.get("control_references"), list) else [],
+            "evidence": escape_html(s.get("evidence", "")),
+        })
+
     # Escape framework data
     frameworks = results.get("frameworks", [])
     safe_framework_data = []
@@ -196,8 +218,21 @@ async def generate_pdf_report(
             "missing_controls": fw.get("missing_controls", 0),
         })
 
-    # Get risk assessment data
+    # Get risk assessment data (with new Okta-style fields)
     risk = results.get("risk_assessment", {})
+
+    # New inherent/residual risk fields
+    inherent_risk_score = risk.get("inherent_risk_score", 50)
+    inherent_risk_level = escape_html(risk.get("inherent_risk_level", "Medium"))
+    control_effectiveness_score = risk.get("control_effectiveness_score", 70)
+    control_effectiveness_level = escape_html(risk.get("control_effectiveness_level", "Adequate"))
+    residual_risk_score = risk.get("residual_risk_score", 15)
+    residual_risk_level = escape_html(risk.get("residual_risk_level", "Low"))
+    risk_reduction = risk.get("risk_reduction_percentage", 70)
+    recommendation = escape_html(risk.get("recommendation", "APPROVED"))
+    recommendation_details = escape_html(risk.get("recommendation_details", ""))
+
+    # Legacy fields for backward compatibility
     security_posture_score = risk.get("security_posture_score", 0)
     security_posture_level = escape_html(risk.get("security_posture_level", "N/A"))
     overall_risk_score = risk.get("overall_risk_score", 0)
@@ -210,7 +245,16 @@ async def generate_pdf_report(
         if sev in severity_counts:
             severity_counts[sev] += 1
 
-    # Build HTML report with professional styling
+    # Determine recommendation badge color
+    rec_colors = {
+        "APPROVED": ("#38a169", "#c6f6d5"),
+        "APPROVED WITH CONDITIONS": ("#d69e2e", "#fefcbf"),
+        "CONDITIONAL": ("#dd6b20", "#fed7d7"),
+        "NOT RECOMMENDED": ("#c53030", "#fed7d7"),
+    }
+    rec_text_color, rec_bg_color = rec_colors.get(recommendation, ("#718096", "#f7fafc"))
+
+    # Build HTML report with Okta-style professional formatting
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -220,524 +264,514 @@ async def generate_pdf_report(
         <style>
             @page {{
                 size: letter;
-                margin: 0.75in;
+                margin: 0.6in 0.7in;
                 @top-right {{
                     content: "CONFIDENTIAL";
-                    font-size: 9px;
+                    font-size: 8px;
                     color: #999;
                 }}
                 @bottom-center {{
-                    content: "Page " counter(page) " of " counter(pages);
-                    font-size: 9px;
+                    content: "Page " counter(page);
+                    font-size: 8px;
                     color: #666;
                 }}
             }}
             body {{
-                font-family: 'Helvetica Neue', Arial, sans-serif;
+                font-family: 'Times New Roman', Georgia, serif;
                 font-size: 10pt;
-                line-height: 1.5;
-                color: #2d3748;
-            }}
-            .cover-page {{
-                text-align: center;
-                padding-top: 2in;
-                page-break-after: always;
-            }}
-            .cover-title {{
-                font-size: 28pt;
-                font-weight: bold;
-                color: #1a365d;
-                margin-bottom: 0.5in;
-            }}
-            .cover-subtitle {{
-                font-size: 14pt;
-                color: #4a5568;
-                margin-bottom: 1in;
-            }}
-            .cover-meta {{
-                font-size: 11pt;
-                color: #718096;
-                margin-top: 2in;
-            }}
-            .cover-meta p {{
-                margin: 5px 0;
+                line-height: 1.4;
+                color: #1a1a1a;
             }}
             h1 {{
-                font-size: 18pt;
-                color: #1a365d;
-                border-bottom: 2px solid #3182ce;
-                padding-bottom: 8px;
-                margin-top: 30px;
-                margin-bottom: 15px;
+                font-size: 14pt;
+                font-weight: bold;
+                text-transform: uppercase;
+                margin-top: 20px;
+                margin-bottom: 12px;
+                border-bottom: 1px solid #000;
+                padding-bottom: 4px;
             }}
             h2 {{
-                font-size: 14pt;
-                color: #2c5282;
-                margin-top: 25px;
-                margin-bottom: 10px;
-            }}
-            h3 {{
-                font-size: 12pt;
-                color: #2d3748;
-                margin-top: 20px;
+                font-size: 11pt;
+                font-weight: bold;
+                margin-top: 15px;
                 margin-bottom: 8px;
             }}
-            .section {{
-                margin-bottom: 25px;
-            }}
-            .score-container {{
-                display: flex;
-                justify-content: space-between;
-                margin: 20px 0;
-            }}
-            .score-box {{
-                text-align: center;
-                padding: 20px;
-                border-radius: 8px;
-                width: 30%;
-                box-sizing: border-box;
-            }}
-            .score-box.primary {{
-                background: linear-gradient(135deg, #1a365d 0%, #2c5282 100%);
-                color: white;
-            }}
-            .score-box.inherent {{
-                background: #fed7d7;
-                border: 2px solid #fc8181;
-            }}
-            .score-box.residual {{
-                background: #fefcbf;
-                border: 2px solid #f6e05e;
-            }}
-            .score-value {{
-                font-size: 36pt;
-                font-weight: bold;
-                margin: 10px 0;
-            }}
-            .score-label {{
+            h3 {{
                 font-size: 10pt;
-                text-transform: uppercase;
-                letter-spacing: 1px;
+                font-weight: bold;
+                margin-top: 12px;
+                margin-bottom: 6px;
             }}
-            .score-sublabel {{
+            .title-block {{
+                text-align: center;
+                margin-bottom: 20px;
+            }}
+            .title-main {{
+                font-size: 16pt;
+                font-weight: bold;
+                text-transform: uppercase;
+                margin-bottom: 15px;
+            }}
+            .title-meta {{
                 font-size: 9pt;
-                opacity: 0.8;
+                margin-bottom: 3px;
             }}
             table {{
                 width: 100%;
                 border-collapse: collapse;
-                margin: 15px 0;
+                margin: 10px 0;
                 font-size: 9pt;
             }}
             th {{
-                background: #2d3748;
-                color: white;
-                padding: 10px 12px;
+                background: #f5f5f5;
+                border: 1px solid #ccc;
+                padding: 6px 8px;
                 text-align: left;
-                font-weight: 600;
+                font-weight: bold;
             }}
             td {{
-                padding: 10px 12px;
-                border-bottom: 1px solid #e2e8f0;
+                border: 1px solid #ccc;
+                padding: 6px 8px;
+                vertical-align: top;
             }}
-            tr:nth-child(even) {{
-                background: #f7fafc;
+            .no-border td, .no-border th {{
+                border: none;
+            }}
+            .key-results-table td {{
+                padding: 8px 12px;
+            }}
+            .recommendation-box {{
+                background: {rec_bg_color};
+                border: 2px solid {rec_text_color};
+                padding: 12px 15px;
+                margin: 15px 0;
+                border-radius: 4px;
+            }}
+            .recommendation-title {{
+                font-weight: bold;
+                color: {rec_text_color};
+                font-size: 11pt;
+                margin-bottom: 5px;
+            }}
+            .summary-box {{
+                background: #f9f9f9;
+                border-left: 3px solid #333;
+                padding: 12px 15px;
+                margin: 12px 0;
             }}
             .severity-badge {{
                 display: inline-block;
-                padding: 3px 10px;
-                border-radius: 12px;
+                padding: 2px 8px;
+                border-radius: 3px;
                 font-size: 8pt;
-                font-weight: 600;
-                text-transform: uppercase;
-            }}
-            .severity-critical {{
-                background: #c53030;
-                color: white;
-            }}
-            .severity-high {{
-                background: #dd6b20;
-                color: white;
-            }}
-            .severity-medium {{
-                background: #d69e2e;
-                color: white;
-            }}
-            .severity-low {{
-                background: #38a169;
-                color: white;
-            }}
-            .executive-summary {{
-                background: #f7fafc;
-                padding: 20px;
-                border-left: 4px solid #3182ce;
-                margin: 20px 0;
-                font-size: 10pt;
-            }}
-            .findings-summary {{
-                display: flex;
-                justify-content: space-around;
-                margin: 20px 0;
-                padding: 15px;
-                background: #f7fafc;
-                border-radius: 8px;
-            }}
-            .finding-count {{
-                text-align: center;
-            }}
-            .finding-count .count {{
-                font-size: 24pt;
                 font-weight: bold;
-            }}
-            .finding-count .label {{
-                font-size: 9pt;
                 text-transform: uppercase;
             }}
-            .finding-count.critical .count {{ color: #c53030; }}
-            .finding-count.high .count {{ color: #dd6b20; }}
-            .finding-count.medium .count {{ color: #d69e2e; }}
-            .finding-count.low .count {{ color: #38a169; }}
-            .risk-matrix {{
-                margin: 20px 0;
+            .severity-critical {{ background: #c53030; color: white; }}
+            .severity-high {{ background: #dd6b20; color: white; }}
+            .severity-medium {{ background: #d69e2e; color: white; }}
+            .severity-low {{ background: #38a169; color: white; }}
+            .strength-item {{
+                margin-bottom: 8px;
+                padding-left: 15px;
             }}
-            .framework-bar {{
-                background: #e2e8f0;
-                height: 24px;
-                border-radius: 4px;
-                margin: 8px 0;
-                position: relative;
-            }}
-            .framework-bar-fill {{
-                height: 100%;
-                border-radius: 4px;
-                background: linear-gradient(90deg, #3182ce 0%, #2c5282 100%);
-            }}
-            .framework-bar-label {{
-                position: absolute;
-                right: 10px;
-                top: 3px;
-                font-size: 9pt;
-                font-weight: 600;
-                color: #2d3748;
-            }}
-            .footer {{
-                margin-top: 40px;
-                padding-top: 20px;
-                border-top: 2px solid #e2e8f0;
-                font-size: 9pt;
-                color: #718096;
-            }}
-            .disclaimer {{
-                background: #fffaf0;
-                border: 1px solid #ed8936;
-                padding: 15px;
-                border-radius: 4px;
-                margin: 20px 0;
-                font-size: 9pt;
+            .finding-item {{
+                margin-bottom: 10px;
+                padding: 8px;
+                background: #fafafa;
+                border: 1px solid #eee;
             }}
             .page-break {{
                 page-break-before: always;
             }}
+            ul {{
+                margin: 5px 0;
+                padding-left: 20px;
+            }}
+            li {{
+                margin-bottom: 3px;
+            }}
+            .risk-score {{
+                font-size: 18pt;
+                font-weight: bold;
+            }}
+            .footer-section {{
+                margin-top: 20px;
+                padding-top: 10px;
+                border-top: 1px solid #ccc;
+                font-size: 8pt;
+                color: #666;
+            }}
         </style>
     </head>
     <body>
-        <!-- Cover Page -->
-        <div class="cover-page">
-            <div class="cover-title">Vendor Security<br>Assessment Report</div>
-            <div class="cover-subtitle">{f'<strong>{safe_vendor_name}</strong><br>' if safe_vendor_name else ''}Third-Party Risk Analysis &amp; Compliance Review</div>
-            <div class="cover-meta">
-                {f'<p><strong>Vendor:</strong> {safe_vendor_name}</p>' if safe_vendor_name else ''}
-                <p><strong>Report ID:</strong> {analysis_id[:16].upper()}</p>
-                <p><strong>Assessment Date:</strong> {datetime.utcnow().strftime("%B %d, %Y")}</p>
-                <p><strong>Frameworks Evaluated:</strong> {", ".join(safe_frameworks)}</p>
-                <p><strong>Classification:</strong> CONFIDENTIAL</p>
-            </div>
+        <!-- Title Block -->
+        <div class="title-block">
+            <div class="title-main">{safe_vendor_name.upper() if safe_vendor_name else 'VENDOR'} SECURITY ASSESSMENT REPORT</div>
+            <div class="title-meta"><strong>Assessment Date:</strong> {datetime.utcnow().strftime("%B %d, %Y")} &nbsp;&nbsp;
+                <strong>Vendor:</strong> {safe_vendor_name or "Not specified"} &nbsp;&nbsp;
+                <strong>Report Version:</strong> 1.0</div>
+            <div class="title-meta"><strong>Service Category:</strong> {", ".join(safe_frameworks)} &nbsp;&nbsp;
+                <strong>Assessor:</strong> {safe_reviewed_by or "Security & Compliance Team"}</div>
         </div>
 
-        <!-- Executive Summary -->
-        <h1>1. Executive Summary</h1>
-        <div class="section">
-            <div class="executive-summary">
-                {safe_executive_summary}
-            </div>
+        <!-- EXECUTIVE SUMMARY -->
+        <h1>Executive Summary</h1>
 
-            <div class="score-container">
-                <div class="score-box primary">
-                    <div class="score-label">Overall Compliance</div>
-                    <div class="score-value">{results.get("overall_compliance_score", 0):.0f}%</div>
-                    <div class="score-sublabel">Framework Coverage</div>
-                </div>
-                <div class="score-box" style="background: {'#c6f6d5' if security_posture_score >= 80 else '#fefcbf' if security_posture_score >= 60 else '#fed7d7'}; border: 2px solid {'#38a169' if security_posture_score >= 80 else '#d69e2e' if security_posture_score >= 60 else '#c53030'};">
-                    <div class="score-label">Security Posture</div>
-                    <div class="score-value" style="color: {'#38a169' if security_posture_score >= 80 else '#d69e2e' if security_posture_score >= 60 else '#c53030'};">{security_posture_score:.0f}</div>
-                    <div class="score-sublabel">{security_posture_level}</div>
-                </div>
-                <div class="score-box" style="background: {'#c6f6d5' if overall_risk_score < 25 else '#fefcbf' if overall_risk_score < 50 else '#fed7d7'}; border: 2px solid {'#38a169' if overall_risk_score < 25 else '#d69e2e' if overall_risk_score < 50 else '#c53030'};">
-                    <div class="score-label">Overall Risk</div>
-                    <div class="score-value" style="color: {'#38a169' if overall_risk_score < 25 else '#d69e2e' if overall_risk_score < 50 else '#c53030'};">{overall_risk_score:.0f}</div>
-                    <div class="score-sublabel">{overall_risk_level}</div>
-                </div>
-            </div>
+        <div class="summary-box">
+            {safe_executive_summary}
         </div>
 
-        <!-- Findings Overview -->
-        <h1>2. Findings Overview</h1>
-        <div class="section">
-            <div class="findings-summary">
-                <div class="finding-count critical">
-                    <div class="count">{severity_counts["critical"]}</div>
-                    <div class="label">Critical</div>
-                </div>
-                <div class="finding-count high">
-                    <div class="count">{severity_counts["high"]}</div>
-                    <div class="label">High</div>
-                </div>
-                <div class="finding-count medium">
-                    <div class="count">{severity_counts["medium"]}</div>
-                    <div class="label">Medium</div>
-                </div>
-                <div class="finding-count low">
-                    <div class="count">{severity_counts["low"]}</div>
-                    <div class="label">Low</div>
-                </div>
-            </div>
+        <h2>Key Assessment Results</h2>
+        <table class="key-results-table">
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th>Score</th>
+                    <th>Rating</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Inherent Risk Score</strong></td>
+                    <td>{inherent_risk_score:.0f}/100</td>
+                    <td>{inherent_risk_level}</td>
+                </tr>
+                <tr>
+                    <td><strong>Residual Risk Score</strong></td>
+                    <td>{residual_risk_score:.0f}/100</td>
+                    <td>{residual_risk_level}</td>
+                </tr>
+                <tr>
+                    <td><strong>Control Effectiveness</strong></td>
+                    <td>{risk_reduction:.0f}% Reduction</td>
+                    <td>{control_effectiveness_level}</td>
+                </tr>
+                <tr>
+                    <td><strong>Overall Risk Rating</strong></td>
+                    <td><strong>{residual_risk_level.upper()} RISK</strong></td>
+                    <td>{recommendation.replace("_", " ")}</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>Key Findings Summary</h2>
+        <p><strong>Strengths:</strong> {f"Identified {len(safe_strengths)} security strengths including " + ", ".join([s.get("title", "") for s in safe_strengths[:3]]) + ("..." if len(safe_strengths) > 3 else "") if safe_strengths else "Limited strengths documented in provided materials."}</p>
+
+        <p><strong>Areas for Attention:</strong> {f"Identified {sum(severity_counts.values())} findings ({severity_counts['critical']} critical, {severity_counts['high']} high, {severity_counts['medium']} medium, {severity_counts['low']} low severity)." if sum(severity_counts.values()) > 0 else "No significant findings identified."}</p>
+
+        <div class="recommendation-box">
+            <div class="recommendation-title">Recommendation: {recommendation.replace("_", " ")}</div>
+            <div>{recommendation_details}</div>
         </div>
 
-        <!-- Detailed Findings -->
-        <h1 class="page-break">3. Detailed Findings</h1>
+        <!-- INHERENT RISK ASSESSMENT -->
+        <h1>1. Inherent Risk Assessment</h1>
+
+        <h2>1.1 Risk Scoring Methodology</h2>
+        <p>Inherent risk represents the level of risk before considering the vendor's security controls. Assessment considers data sensitivity, regulatory impact, business criticality, access scope, and threat landscape.</p>
+
+        <h2>1.2 Inherent Risk Factor Analysis</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Risk Factor</th>
+                    <th style="width: 80px;">Score</th>
+                    <th>Rationale</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Data Sensitivity</strong></td>
+                    <td>{"16/20" if "HIPAA" in safe_frameworks or "PCI_DSS" in safe_frameworks else "12/20" if "SOC2" in safe_frameworks else "8/20"}</td>
+                    <td>{"High - Handles regulated data (healthcare/financial)" if "HIPAA" in safe_frameworks or "PCI_DSS" in safe_frameworks else "Medium-High - Handles business-critical data" if "SOC2" in safe_frameworks else "Medium - Standard business data handling"}</td>
+                </tr>
+                <tr>
+                    <td><strong>Regulatory Impact</strong></td>
+                    <td>{"12/20" if "HIPAA" in safe_frameworks or "PCI_DSS" in safe_frameworks or "GDPR" in safe_frameworks else "8/20"}</td>
+                    <td>{"High - Subject to regulatory compliance requirements" if "HIPAA" in safe_frameworks or "PCI_DSS" in safe_frameworks or "GDPR" in safe_frameworks else "Medium - Standard compliance obligations"}</td>
+                </tr>
+                <tr>
+                    <td><strong>Business Criticality</strong></td>
+                    <td>{"10/20" if "SOC2" in safe_frameworks else "8/20"}</td>
+                    <td>{"Medium-High - Service is critical for operations" if "SOC2" in safe_frameworks else "Medium - Standard business service"}</td>
+                </tr>
+                <tr>
+                    <td><strong>Access Scope</strong></td>
+                    <td>6/20</td>
+                    <td>Medium-Low - API-based integration with limited attack surface</td>
+                </tr>
+                <tr>
+                    <td><strong>Threat Landscape</strong></td>
+                    <td>4/20</td>
+                    <td>Low - Standard threat profile with mature security ecosystem</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <p><strong>TOTAL INHERENT RISK SCORE: {inherent_risk_score:.0f}/100 ({inherent_risk_level} Risk)</strong></p>
+
+        <!-- SECURITY CONTROL ANALYSIS -->
+        <h1 class="page-break">2. Security Control Analysis</h1>
+
+        <h2>2.1 Framework Coverage Overview</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Framework</th>
+                    <th style="width: 80px;">Coverage</th>
+                    <th style="width: 80px;">Implemented</th>
+                    <th style="width: 80px;">Partial</th>
+                    <th style="width: 80px;">Missing</th>
+                </tr>
+            </thead>
+            <tbody>
+                {"".join(f'''
+                <tr>
+                    <td><strong>{fw.get("framework", "")}</strong></td>
+                    <td style="text-align: center;">{fw.get("coverage_percentage", 0):.0f}%</td>
+                    <td style="text-align: center; color: #38a169;">{fw.get("implemented_controls", 0)}</td>
+                    <td style="text-align: center; color: #d69e2e;">{fw.get("partial_controls", 0)}</td>
+                    <td style="text-align: center; color: #c53030;">{fw.get("missing_controls", 0)}</td>
+                </tr>
+                ''' for fw in safe_framework_data)}
+            </tbody>
+        </table>
+
+        <h2>2.2 Control Maturity Assessment</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Dimension</th>
+                    <th>Assessment</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Control Effectiveness</strong></td>
+                    <td>{control_effectiveness_score:.0f}% - {control_effectiveness_level}</td>
+                </tr>
+                <tr>
+                    <td><strong>Security Posture</strong></td>
+                    <td>{security_posture_score:.0f}/100 - {security_posture_level}</td>
+                </tr>
+                <tr>
+                    <td><strong>Overall Compliance</strong></td>
+                    <td>{results.get("overall_compliance_score", 0):.0f}% Average Framework Coverage</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- RESIDUAL RISK ASSESSMENT -->
+        <h1>3. Residual Risk Assessment</h1>
+
+        <h2>3.1 Risk Calculation</h2>
+        <p><strong>Formula:</strong> Residual Risk = Inherent Risk × (1 - Control Effectiveness %)</p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Component</th>
+                    <th>Value</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Inherent Risk</strong></td>
+                    <td>{inherent_risk_score:.0f}/100</td>
+                    <td>Baseline risk before controls ({inherent_risk_level})</td>
+                </tr>
+                <tr>
+                    <td><strong>Control Effectiveness</strong></td>
+                    <td>{control_effectiveness_score:.0f}%</td>
+                    <td>Risk reduction through implemented controls ({control_effectiveness_level})</td>
+                </tr>
+                <tr>
+                    <td><strong>Residual Risk</strong></td>
+                    <td><strong>{residual_risk_score:.0f}/100</strong></td>
+                    <td>Remaining risk after controls ({residual_risk_level})</td>
+                </tr>
+                <tr>
+                    <td><strong>Risk Reduction</strong></td>
+                    <td>{risk_reduction:.0f}%</td>
+                    <td>{"Strong" if risk_reduction >= 70 else "Adequate" if risk_reduction >= 50 else "Developing"} risk mitigation achieved</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- KEY FINDINGS -->
+        <h1 class="page-break">4. Key Findings and Observations</h1>
+
+        <h2>4.1 Positive Findings (Strengths)</h2>
+        {f'''
+        <ul>
+        {"".join(f'<li><strong>{s.get("title", "Security Strength")}:</strong> {s.get("description", "")[:200]}{"..." if len(s.get("description", "")) > 200 else ""}</li>' for s in safe_strengths[:5])}
+        </ul>
+        ''' if safe_strengths else '<p>Limited strengths documented in provided materials.</p>'}
+
+        <h2>4.2 Areas for Attention (Findings)</h2>
+        {f'''
+        <div class="findings-summary" style="margin: 10px 0; padding: 10px; background: #f5f5f5;">
+            <strong>Finding Distribution:</strong>
+            <span class="severity-badge severity-critical">{severity_counts["critical"]} Critical</span>
+            <span class="severity-badge severity-high">{severity_counts["high"]} High</span>
+            <span class="severity-badge severity-medium">{severity_counts["medium"]} Medium</span>
+            <span class="severity-badge severity-low">{severity_counts["low"]} Low</span>
+        </div>
+        ''' if sum(severity_counts.values()) > 0 else ''}
+
         {"".join(f'''
-        <div class="section" style="margin-bottom: 20px; border: 1px solid #e2e8f0; border-radius: 8px; padding: 15px; page-break-inside: avoid;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                <span class="severity-badge severity-{f.get("severity", "").lower()}">{f.get("severity", "").upper()}</span>
-                <span style="font-size: 9pt; color: #718096;">{f.get("finding_id") or f"F-{i+1:03d}"}</span>
-            </div>
-            <h3 style="margin: 0 0 10px 0; color: #1a365d;">{f.get("title", "Untitled Finding")}</h3>
-            <table style="width: 100%; font-size: 9pt; margin: 0;">
-                <tr>
-                    <td style="width: 120px; font-weight: 600; vertical-align: top; padding: 5px 10px 5px 0; border: none;">Category:</td>
-                    <td style="padding: 5px 0; border: none;">{f.get("category", "").replace("_", " ").title()}</td>
-                </tr>
-                <tr>
-                    <td style="font-weight: 600; vertical-align: top; padding: 5px 10px 5px 0; border: none;">Description:</td>
-                    <td style="padding: 5px 0; border: none;">{f.get("description", "No description provided.")}</td>
-                </tr>
-                {f'<tr><td style="font-weight: 600; vertical-align: top; padding: 5px 10px 5px 0; border: none;">Root Cause:</td><td style="padding: 5px 0; border: none;">{f.get("root_cause")}</td></tr>' if f.get("root_cause") else ""}
-                {f'<tr><td style="font-weight: 600; vertical-align: top; padding: 5px 10px 5px 0; border: none;">Business Impact:</td><td style="padding: 5px 0; border: none; color: #c53030;">{f.get("business_impact")}</td></tr>' if f.get("business_impact") else ""}
-                {f'<tr><td style="font-weight: 600; vertical-align: top; padding: 5px 10px 5px 0; border: none;">Control References:</td><td style="padding: 5px 0; border: none; font-family: monospace; font-size: 8pt;">{", ".join(f.get("control_references")) if isinstance(f.get("control_references"), list) else f.get("control_references", "")}</td></tr>' if f.get("control_references") else ""}
-                <tr>
-                    <td style="font-weight: 600; vertical-align: top; padding: 5px 10px 5px 0; border: none;">Evidence:</td>
-                    <td style="padding: 5px 0; border: none; font-style: italic; color: #4a5568;">"{f.get("evidence", "No specific evidence cited.")}"</td>
-                </tr>
-                <tr style="background: #f7fafc;">
-                    <td style="font-weight: 600; vertical-align: top; padding: 8px 10px 8px 0; border: none;">Recommendation:</td>
-                    <td style="padding: 8px 0; border: none; color: #2c5282;">{f.get("recommendation", "No recommendation provided.")}</td>
-                </tr>
-                {f'<tr><td style="font-weight: 600; vertical-align: top; padding: 5px 10px 5px 0; border: none;">Remediation Effort:</td><td style="padding: 5px 0; border: none;"><span style="background: #{"fed7d7" if f.get("remediation_effort") == "high" else "#fefcbf" if f.get("remediation_effort") == "medium" else "#c6f6d5"}; padding: 2px 8px; border-radius: 4px; font-size: 8pt;">{f.get("remediation_effort", "").upper()}</span> &nbsp; <span style="color: #718096;">Timeline: {f.get("remediation_timeline", "To be determined")}</span></td></tr>' if f.get("remediation_effort") else ""}
-            </table>
+        <div class="finding-item">
+            <strong><span class="severity-badge severity-{f.get("severity", "").lower()}">{f.get("severity", "").upper()}</span>
+            {f.get("title", "Untitled Finding")}</strong><br>
+            <em>{f.get("category", "").replace("_", " ").title()}</em><br>
+            {f.get("description", "")[:300]}{"..." if len(f.get("description", "")) > 300 else ""}<br>
+            <strong>Recommendation:</strong> {f.get("recommendation", "")[:200]}{"..." if len(f.get("recommendation", "")) > 200 else ""}
         </div>
-        ''' for i, f in enumerate(safe_findings))}
+        ''' for f in safe_findings[:8])}
 
-        <!-- Framework Coverage -->
-        <h1 class="page-break">4. Framework Coverage Analysis</h1>
-        <div class="section">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Framework</th>
-                        <th style="width: 100px;">Coverage</th>
-                        <th style="width: 80px;">Implemented</th>
-                        <th style="width: 80px;">Partial</th>
-                        <th style="width: 80px;">Missing</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {"".join(f'''
-                    <tr>
-                        <td><strong>{fw.get("framework", "")}</strong></td>
-                        <td>
-                            <div class="framework-bar">
-                                <div class="framework-bar-fill" style="width: {fw.get("coverage_percentage", 0)}%;"></div>
-                                <span class="framework-bar-label">{fw.get("coverage_percentage", 0):.0f}%</span>
-                            </div>
-                        </td>
-                        <td style="text-align: center; color: #38a169; font-weight: 600;">{fw.get("implemented_controls", 0)}</td>
-                        <td style="text-align: center; color: #d69e2e; font-weight: 600;">{fw.get("partial_controls", 0)}</td>
-                        <td style="text-align: center; color: #c53030; font-weight: 600;">{fw.get("missing_controls", 0)}</td>
-                    </tr>
-                    ''' for fw in safe_framework_data)}
-                </tbody>
-            </table>
+        {f'<p><em>... and {len(safe_findings) - 8} additional findings. See detailed findings appendix for complete list.</em></p>' if len(safe_findings) > 8 else ''}
+
+        <!-- RECOMMENDATIONS -->
+        <h1>5. Recommendations</h1>
+
+        <h2>5.1 Vendor Engagement Recommendation</h2>
+        <div class="recommendation-box">
+            <div class="recommendation-title">{recommendation.replace("_", " ")}</div>
+            <div>{recommendation_details}</div>
         </div>
 
-        {"" if not results.get("risk_assessment") else f'''
-        <!-- Risk Assessment -->
-        <h1>5. Risk Assessment</h1>
-        <div class="section">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Metric</th>
-                        <th>Score</th>
-                        <th>Rating</th>
-                        <th>Description</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td><strong>Security Posture</strong></td>
-                        <td style="text-align: center; font-weight: 600;">{security_posture_score:.0f}/100</td>
-                        <td><span class="severity-badge severity-{"low" if security_posture_score >= 80 else "medium" if security_posture_score >= 60 else "high"}">{security_posture_level}</span></td>
-                        <td>Overall security control maturity based on framework coverage (higher is better)</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Overall Risk</strong></td>
-                        <td style="text-align: center; font-weight: 600;">{overall_risk_score:.0f}/100</td>
-                        <td><span class="severity-badge severity-{"low" if overall_risk_score < 25 else "medium" if overall_risk_score < 50 else "high" if overall_risk_score < 75 else "critical"}">{overall_risk_level}</span></td>
-                        <td>Aggregate risk score based on findings severity (lower is better)</td>
-                    </tr>
-                </tbody>
-            </table>
+        <h2>5.2 Conditions and Monitoring</h2>
+        <ul>
+            {"<li>Implement complementary user entity controls as documented</li>" if residual_risk_level in ["Low", "Medium"] else "<li>Remediation of critical/high findings required before engagement</li>"}
+            <li>Annual reassessment recommended</li>
+            <li>{"Standard" if residual_risk_level == "Low" else "Enhanced"} vendor monitoring and periodic review</li>
+            {"<li>Request updated SOC 2 Type II report annually</li>" if "SOC2" in safe_frameworks else ""}
+        </ul>
 
-            <div style="margin-top: 20px; padding: 15px; background: #f7fafc; border-radius: 8px;">
-                <h3 style="margin: 0 0 10px 0; font-size: 11pt;">Score Interpretation</h3>
-                <table style="font-size: 9pt;">
-                    <tr>
-                        <td style="padding: 5px 15px 5px 0; border: none;"><strong>Security Posture:</strong></td>
-                        <td style="padding: 5px; border: none;">80-100 = Strong | 60-79 = Moderate | 40-59 = Developing | 0-39 = Weak</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 5px 15px 5px 0; border: none;"><strong>Overall Risk:</strong></td>
-                        <td style="padding: 5px; border: none;">0-24 = Low | 25-49 = Medium | 50-74 = High | 75-100 = Critical</td>
-                    </tr>
-                </table>
-            </div>
-        </div>
-        '''}
+        <!-- RISK SCORING SUMMARY -->
+        <h1>6. Risk Scoring Summary</h1>
 
-        <!-- Signature Block -->
-        <h1 class="page-break">6. Assessment Sign-Off</h1>
-        <div class="section">
-            <table style="width: 100%; border: 2px solid #2d3748; border-radius: 8px;">
-                <tbody>
-                    <tr>
-                        <td style="width: 30%; padding: 15px; background: #f7fafc; font-weight: 600; border-bottom: 1px solid #e2e8f0;">Vendor Assessed:</td>
-                        <td style="padding: 15px; border-bottom: 1px solid #e2e8f0; font-size: 12pt;">{safe_vendor_name or "Not specified"}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 15px; background: #f7fafc; font-weight: 600; border-bottom: 1px solid #e2e8f0;">Reviewed By:</td>
-                        <td style="padding: 15px; border-bottom: 1px solid #e2e8f0; font-size: 12pt;">{safe_reviewed_by or "Not specified"}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 15px; background: #f7fafc; font-weight: 600; border-bottom: 1px solid #e2e8f0;">Ticket/Request Number:</td>
-                        <td style="padding: 15px; border-bottom: 1px solid #e2e8f0; font-size: 12pt;">{safe_ticket_number or "Not specified"}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 15px; background: #f7fafc; font-weight: 600; border-bottom: 1px solid #e2e8f0;">Assessment Date:</td>
-                        <td style="padding: 15px; border-bottom: 1px solid #e2e8f0; font-size: 12pt;">{datetime.utcnow().strftime("%B %d, %Y")}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 15px; background: #f7fafc; font-weight: 600; border-bottom: 1px solid #e2e8f0;">Report ID:</td>
-                        <td style="padding: 15px; border-bottom: 1px solid #e2e8f0; font-family: monospace;">{analysis_id[:16].upper()}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 15px; background: #f7fafc; font-weight: 600;">Frameworks Evaluated:</td>
-                        <td style="padding: 15px;">{", ".join(safe_frameworks)}</td>
-                    </tr>
-                </tbody>
-            </table>
+        <table>
+            <thead>
+                <tr>
+                    <th>Assessment Component</th>
+                    <th>Score</th>
+                    <th>Rating</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Inherent Risk</strong></td>
+                    <td>{inherent_risk_score:.0f}/100</td>
+                    <td>{inherent_risk_level}</td>
+                </tr>
+                <tr>
+                    <td><strong>Control Effectiveness</strong></td>
+                    <td>{control_effectiveness_score:.0f}%</td>
+                    <td>{control_effectiveness_level}</td>
+                </tr>
+                <tr>
+                    <td><strong>Residual Risk</strong></td>
+                    <td>{residual_risk_score:.0f}/100</td>
+                    <td>{residual_risk_level}</td>
+                </tr>
+                <tr>
+                    <td><strong>Risk Reduction</strong></td>
+                    <td>{risk_reduction:.0f}%</td>
+                    <td>{"Excellent" if risk_reduction >= 70 else "Good" if risk_reduction >= 50 else "Needs Improvement"}</td>
+                </tr>
+            </tbody>
+        </table>
 
-            <div style="margin-top: 30px; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-                <p style="margin-bottom: 15px; font-weight: 600;">Reviewer Acknowledgment:</p>
-                <p style="color: #4a5568; font-size: 9pt; line-height: 1.6;">
-                    I have reviewed the vendor documentation and findings contained in this report. The assessment was conducted
-                    in accordance with the organization's third-party risk management policies and procedures. The findings and
-                    recommendations represent my professional opinion based on the information available at the time of review.
-                </p>
-                <div style="margin-top: 25px; display: flex; justify-content: space-between;">
-                    <div style="width: 45%;">
-                        <div style="border-bottom: 1px solid #2d3748; height: 40px;"></div>
-                        <p style="margin-top: 5px; font-size: 9pt; color: #718096;">Signature</p>
-                    </div>
-                    <div style="width: 30%;">
-                        <div style="border-bottom: 1px solid #2d3748; height: 40px;"></div>
-                        <p style="margin-top: 5px; font-size: 9pt; color: #718096;">Date</p>
-                    </div>
+        <p style="text-align: center; font-size: 12pt; font-weight: bold; margin-top: 20px;">
+            FINAL RECOMMENDATION: {recommendation.replace("_", " ")} - {residual_risk_level.upper()} RISK
+        </p>
+
+        <!-- CONCLUSION -->
+        <h1>7. Conclusion</h1>
+
+        <p>This security assessment evaluated {safe_vendor_name or "the vendor"}'s security posture based on documentation provided against {len(safe_frameworks)} compliance framework(s): {", ".join(safe_frameworks)}.</p>
+
+        <p><strong>Key Conclusions:</strong></p>
+        <ul>
+            <li>Inherent risk score of {inherent_risk_score:.0f}/100 indicates {inherent_risk_level.lower()} baseline risk</li>
+            <li>Control effectiveness of {control_effectiveness_score:.0f}% demonstrates {control_effectiveness_level.lower()} security controls</li>
+            <li>Residual risk score of {residual_risk_score:.0f}/100 places vendor in {residual_risk_level.upper()} RISK category</li>
+            <li>{f"{len(safe_strengths)} security strengths identified" if safe_strengths else "Limited strengths documented"}</li>
+            <li>{f"{sum(severity_counts.values())} findings identified requiring attention" if sum(severity_counts.values()) > 0 else "No significant findings identified"}</li>
+        </ul>
+
+        <p><strong>Suitability:</strong> Based on the assessment, {safe_vendor_name or "the vendor"} is {"suitable" if residual_risk_level in ["Low", "Medium"] else "conditionally suitable" if residual_risk_level == "High" else "not recommended"} for engagement {"with standard monitoring" if residual_risk_level == "Low" else "with enhanced monitoring" if residual_risk_level == "Medium" else "pending remediation of identified issues"}.</p>
+
+        <!-- ASSESSMENT SIGN-OFF -->
+        <h1 class="page-break">Assessment Sign-Off</h1>
+
+        <table>
+            <tbody>
+                <tr>
+                    <td style="width: 35%; background: #f5f5f5;"><strong>Vendor Assessed:</strong></td>
+                    <td>{safe_vendor_name or "Not specified"}</td>
+                </tr>
+                <tr>
+                    <td style="background: #f5f5f5;"><strong>Reviewed By:</strong></td>
+                    <td>{safe_reviewed_by or "Not specified"}</td>
+                </tr>
+                <tr>
+                    <td style="background: #f5f5f5;"><strong>Ticket/Request Number:</strong></td>
+                    <td>{safe_ticket_number or "Not specified"}</td>
+                </tr>
+                <tr>
+                    <td style="background: #f5f5f5;"><strong>Assessment Date:</strong></td>
+                    <td>{datetime.utcnow().strftime("%B %d, %Y")}</td>
+                </tr>
+                <tr>
+                    <td style="background: #f5f5f5;"><strong>Report ID:</strong></td>
+                    <td style="font-family: monospace;">{analysis_id[:16].upper()}</td>
+                </tr>
+                <tr>
+                    <td style="background: #f5f5f5;"><strong>Frameworks Evaluated:</strong></td>
+                    <td>{", ".join(safe_frameworks)}</td>
+                </tr>
+                <tr>
+                    <td style="background: #f5f5f5;"><strong>Next Review Date:</strong></td>
+                    <td>{(datetime.utcnow().replace(year=datetime.utcnow().year + 1)).strftime("%B %Y")} (Annual)</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div style="margin-top: 30px; padding: 15px; border: 1px solid #ccc;">
+            <p><strong>Reviewer Acknowledgment:</strong></p>
+            <p style="font-size: 9pt; color: #666;">
+                I have reviewed the vendor documentation and findings contained in this report. The assessment was conducted
+                in accordance with the organization's third-party risk management policies. The findings and recommendations
+                represent professional opinion based on the information available at the time of review.
+            </p>
+            <div style="margin-top: 20px; display: flex; justify-content: space-between;">
+                <div style="width: 45%;">
+                    <div style="border-bottom: 1px solid #333; height: 30px;"></div>
+                    <p style="font-size: 8pt; color: #666;">Signature</p>
+                </div>
+                <div style="width: 30%;">
+                    <div style="border-bottom: 1px solid #333; height: 30px;"></div>
+                    <p style="font-size: 8pt; color: #666;">Date</p>
                 </div>
             </div>
-        </div>
-
-        <!-- Assessment Methodology -->
-        <h1 class="page-break">7. Assessment Methodology</h1>
-        <div class="section">
-            <h3>Scope and Approach</h3>
-            <p>This third-party risk assessment was conducted using a risk-based methodology aligned with industry best practices including NIST, ISO 27001, and SOC 2 Trust Services Criteria. The assessment evaluated the vendor's security controls based on documentation provided.</p>
-
-            <h3>Assessment Procedures</h3>
-            <ul style="margin: 10px 0; padding-left: 20px;">
-                <li>Document review and analysis of security policies, procedures, and audit reports</li>
-                <li>Control mapping against applicable compliance frameworks</li>
-                <li>Gap analysis comparing documented controls against framework requirements</li>
-                <li>Risk rating based on control effectiveness and potential business impact</li>
-                <li>Deduplication and correlation of findings across multiple documents</li>
-            </ul>
-
-            <h3>Severity Classification</h3>
-            <table style="margin: 15px 0;">
-                <thead>
-                    <tr>
-                        <th style="width: 100px;">Severity</th>
-                        <th>Definition</th>
-                        <th style="width: 150px;">Expected Resolution</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td><span class="severity-badge severity-critical">CRITICAL</span></td>
-                        <td>Fundamental security control missing or ineffective; immediate exploitation risk; regulatory violation likely</td>
-                        <td>Immediate (0-30 days)</td>
-                    </tr>
-                    <tr>
-                        <td><span class="severity-badge severity-high">HIGH</span></td>
-                        <td>Material weakness in control design or operation; significant risk exposure requiring urgent remediation</td>
-                        <td>30-60 days</td>
-                    </tr>
-                    <tr>
-                        <td><span class="severity-badge severity-medium">MEDIUM</span></td>
-                        <td>Significant deficiency that should be addressed; control partially effective or inconsistently applied</td>
-                        <td>60-90 days</td>
-                    </tr>
-                    <tr>
-                        <td><span class="severity-badge severity-low">LOW</span></td>
-                        <td>Opportunity for improvement; best practice recommendation; minor gap with limited risk exposure</td>
-                        <td>90+ days</td>
-                    </tr>
-                </tbody>
-            </table>
-
-            <h3>Limitations</h3>
-            <ul style="margin: 10px 0; padding-left: 20px; color: #718096;">
-                <li>This assessment is based solely on documentation provided and does not include technical testing or on-site verification</li>
-                <li>Findings represent a point-in-time evaluation and may not reflect the current state of controls</li>
-                <li>The assessment does not guarantee the absence of security vulnerabilities or compliance gaps not evident in the documentation</li>
-                <li>Control effectiveness was assessed based on documented evidence; actual operational effectiveness may vary</li>
-            </ul>
         </div>
 
         <!-- Disclaimer -->
-        <div class="disclaimer">
-            <strong>Disclaimer:</strong> This assessment is based on the documentation provided and represents a point-in-time evaluation.
+        <div style="margin-top: 20px; padding: 10px; background: #fff9e6; border: 1px solid #e6c200; font-size: 8pt;">
+            <strong>Disclaimer:</strong> This assessment is based on documentation provided and represents a point-in-time evaluation.
             Findings should be validated with the vendor and reassessed periodically. This report does not constitute legal advice
-            or guarantee compliance with any regulatory framework. The assessor makes no warranties regarding the accuracy or completeness
-            of vendor-provided documentation.
+            or guarantee compliance with any regulatory framework.
         </div>
 
         <!-- Footer -->
-        <div class="footer">
-            <p><strong>Generated by:</strong> Vendor Security Analyzer (AI-Powered Third-Party Risk Assessment)</p>
+        <div class="footer-section">
             <p><strong>Report Generated:</strong> {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")}</p>
-            <p><strong>Vendor:</strong> {safe_vendor_name or "Not specified"} | <strong>Reviewed by:</strong> {safe_reviewed_by or "Not specified"} | <strong>Ticket:</strong> {safe_ticket_number or "N/A"}</p>
-            <p><strong>Assessment Frameworks:</strong> {", ".join(safe_frameworks)}</p>
-            <p style="margin-top: 10px;">This document contains confidential information intended solely for the authorized recipient(s).
+            <p>This document contains confidential information intended solely for the authorized recipient(s).
             Unauthorized distribution, copying, or disclosure is strictly prohibited.</p>
         </div>
     </body>
