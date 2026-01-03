@@ -6,6 +6,7 @@ import random
 from typing import Optional
 
 import boto3
+import httpx
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -22,11 +23,12 @@ class AIAnalyzer:
 
     def __init__(self):
         self._client = None
+        self._use_bearer_token = bool(settings.aws_bearer_token_bedrock)
 
     @property
     def client(self):
-        """Lazy initialization of Bedrock client."""
-        if self._client is None:
+        """Lazy initialization of Bedrock client (only used for IAM auth)."""
+        if self._client is None and not self._use_bearer_token:
             config = Config(
                 connect_timeout=30,
                 read_timeout=180,  # Increased for longer documents
@@ -38,6 +40,38 @@ class AIAnalyzer:
                 config=config,
             )
         return self._client
+
+    def _get_bedrock_url(self) -> str:
+        """Get the Bedrock runtime API URL for the configured region."""
+        return f"https://bedrock-runtime.{settings.aws_region}.amazonaws.com"
+
+    async def _invoke_with_bearer_token(self, model_id: str, body: dict) -> dict:
+        """Invoke Bedrock model using bearer token authentication."""
+        url = f"{self._get_bedrock_url()}/model/{model_id}/invoke"
+
+        headers = {
+            "Authorization": f"Bearer {settings.aws_bearer_token_bedrock}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(url, json=body, headers=headers)
+
+            if response.status_code == 429:
+                raise ClientError(
+                    {"Error": {"Code": "ThrottlingException", "Message": "Rate limited"}},
+                    "InvokeModel"
+                )
+            elif response.status_code == 503:
+                raise ClientError(
+                    {"Error": {"Code": "ServiceUnavailableException", "Message": "Service unavailable"}},
+                    "InvokeModel"
+                )
+            elif response.status_code != 200:
+                raise Exception(f"Bedrock API error: {response.status_code} - {response.text}")
+
+            return response.json()
 
     async def _retry_with_backoff(self, func, *args, **kwargs):
         """Execute a function with exponential backoff on throttling errors."""
@@ -385,17 +419,59 @@ Respond ONLY with valid JSON, no additional text or markdown formatting."""
             "messages": [{"role": "user", "content": prompt}],
         }
 
-        def make_request():
-            return self.client.invoke_model(
-                modelId=settings.bedrock_model_id,
-                body=json.dumps(request_body),
-                contentType="application/json",
-                accept="application/json",
-            )
+        if self._use_bearer_token:
+            # Use bearer token authentication via HTTP
+            return await self._invoke_with_bearer_token_retry(request_body)
+        else:
+            # Use boto3 with IAM credentials
+            def make_request():
+                return self.client.invoke_model(
+                    modelId=settings.bedrock_model_id,
+                    body=json.dumps(request_body),
+                    contentType="application/json",
+                    accept="application/json",
+                )
 
-        response = await self._retry_with_backoff(make_request)
-        response_body = json.loads(response["body"].read())
-        return response_body["content"][0]["text"]
+            response = await self._retry_with_backoff(make_request)
+            response_body = json.loads(response["body"].read())
+            return response_body["content"][0]["text"]
+
+    async def _invoke_with_bearer_token_retry(self, request_body: dict) -> str:
+        """Invoke model using bearer token with retry logic."""
+        last_exception = None
+
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                response = await self._invoke_with_bearer_token(
+                    settings.bedrock_model_id,
+                    request_body
+                )
+                return response["content"][0]["text"]
+            except ClientError as e:
+                error_code = e.response.get("Error", {}).get("Code", "")
+                if error_code in ("ThrottlingException", "TooManyRequestsException", "ServiceUnavailableException"):
+                    last_exception = e
+                    delay = min(self.MAX_DELAY, self.BASE_DELAY * (2 ** attempt))
+                    jitter = random.uniform(0, delay * 0.5)
+                    wait_time = delay + jitter
+                    print(f"Rate limited (attempt {attempt + 1}/{self.MAX_RETRIES}), waiting {wait_time:.1f}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
+            except Exception as e:
+                # For non-ClientError exceptions, check if it's a rate limit response
+                error_msg = str(e).lower()
+                if "429" in error_msg or "throttl" in error_msg or "rate limit" in error_msg:
+                    last_exception = e
+                    delay = min(self.MAX_DELAY, self.BASE_DELAY * (2 ** attempt))
+                    jitter = random.uniform(0, delay * 0.5)
+                    wait_time = delay + jitter
+                    print(f"Rate limited (attempt {attempt + 1}/{self.MAX_RETRIES}), waiting {wait_time:.1f}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
+
+        raise last_exception or Exception("Max retries exceeded")
 
     async def generate_consolidated_summary(
         self,

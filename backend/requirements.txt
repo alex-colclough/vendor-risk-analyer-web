@@ -16,6 +16,9 @@ python-dotenv==1.0.1
 boto3==1.35.93
 botocore==1.35.93
 
+# HTTP client (for Bedrock API key authentication)
+httpx==0.28.1
+
 # File type detection
 python-magic==0.4.27
 
